@@ -1,0 +1,4 @@
+baseURL = 'https://gmtreacy.github.io/aiops/'
+locale = 'en-us'
+title = 'AI Ops'
+theme = 'PaperMod'
