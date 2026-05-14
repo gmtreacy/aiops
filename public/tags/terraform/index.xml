@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Terraform on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/terraform/</link>
+    <description>Recent content in Terraform on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Tue, 05 May 2026 09:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/terraform/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>A Terraform Module for EKS GPU Node Groups</title>
+      <link>https://gmtreacy.github.io/aiops/posts/terraform-eks-gpu-nodegroup/</link>
+      <pubDate>Tue, 05 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/terraform-eks-gpu-nodegroup/</guid>
+      <description>A small, opinionated Terraform module for adding g5/p4d/p5 capacity to an existing EKS cluster — taints, labels, capacity reservations, and the IAM bits people forget.</description>
+      <content:encoded><![CDATA[<p>Most public EKS Terraform modules treat GPU node groups as an afterthought. This is the slim wrapper I keep reaching for, with the choices that have bitten me documented inline.</p>
+<h2 id="what-the-module-assumes">What the module assumes</h2>
+<ul>
+<li>You already have an EKS cluster managed by <a href="https://registry.terraform.io/modules/terraform-aws-modules/eks/aws/latest">terraform-aws-modules/eks/aws</a>.</li>
+<li>You will install the <a href="https://github.com/NVIDIA/k8s-device-plugin">NVIDIA device plugin</a> separately (Helm or via Karpenter&rsquo;s user-data).</li>
+<li>You want <strong>Spot for elastic, On-Demand Capacity Reservation for the floor.</strong></li>
+</ul>
+<h2 id="the-module">The module</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># modules/eks-gpu-nodegroup/variables.tf
+</span></span></span><span class="line"><span class="cl"><span class="n">variable &#34;cluster_name&#34;     { type</span> <span class="o">=</span> <span class="k">string</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;subnet_ids&#34;       { type</span> <span class="o">=</span> <span class="k">list</span><span class="p">(</span><span class="k">string</span><span class="p">)</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;instance_types&#34;   { type</span> <span class="o">=</span><span class="n"> list(string)  default</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;g5.2xlarge&#34;</span><span class="p">]</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;capacity_type&#34;    { type</span> <span class="o">=</span><span class="n"> string        default</span> <span class="o">=</span> <span class="s2">&#34;SPOT&#34;</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;min_size&#34;         { type</span> <span class="o">=</span><span class="n"> number        default</span> <span class="o">=</span> <span class="m">0</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;max_size&#34;         { type</span> <span class="o">=</span><span class="n"> number        default</span> <span class="o">=</span> <span class="m">8</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;desired_size&#34;     { type</span> <span class="o">=</span><span class="n"> number        default</span> <span class="o">=</span> <span class="m">0</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;capacity_reservation_id&#34; { type</span> <span class="o">=</span><span class="n"> string default</span> <span class="o">=</span> <span class="k">null</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;labels&#34;           { type</span> <span class="o">=</span><span class="n"> map(string)   default</span> <span class="o">=</span> {} }
+</span></span><span class="line"><span class="cl"><span class="k">variable</span> <span class="s2">&#34;taints&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  type</span> <span class="o">=</span><span class="n"> list(object({ key</span> <span class="o">=</span><span class="n"> string, value</span> <span class="o">=</span><span class="n"> string, effect</span> <span class="o">=</span> <span class="k">string</span> }<span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="n">  default</span> <span class="o">=</span> <span class="p">[</span>{
+</span></span><span class="line"><span class="cl"><span class="n">    key</span> <span class="o">=</span><span class="n"> &#34;nvidia.com/gpu&#34;, value</span> <span class="o">=</span><span class="n"> &#34;true&#34;, effect</span> <span class="o">=</span> <span class="s2">&#34;NO_SCHEDULE&#34;</span>
+</span></span><span class="line"><span class="cl">  }<span class="p">]</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># modules/eks-gpu-nodegroup/main.tf
+</span></span></span><span class="line"><span class="cl"><span class="k">locals</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span> <span class="o">=</span> <span class="s2">&#34;${var.cluster_name}-gpu&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  base_labels</span> <span class="o">=</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    &#34;workload&#34;</span>          <span class="o">=</span> <span class="s2">&#34;gpu&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    &#34;nvidia.com/gpu&#34;</span>    <span class="o">=</span> <span class="s2">&#34;present&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    &#34;node.kubernetes.io/instance-type&#34;</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">instance_types</span><span class="p">[</span><span class="m">0</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;aws_eks_node_group&#34; &#34;this&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  cluster_name</span>    <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">cluster_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  node_group_name</span> <span class="o">=</span> <span class="k">local</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  node_role_arn</span>   <span class="o">=</span> <span class="k">aws_iam_role</span><span class="p">.</span><span class="k">this</span><span class="p">.</span><span class="k">arn</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_ids</span>      <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">subnet_ids</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  ami_type</span>       <span class="o">=</span> <span class="s2">&#34;AL2023_x86_64_NVIDIA&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  instance_types</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">instance_types</span>
+</span></span><span class="line"><span class="cl"><span class="n">  capacity_type</span>  <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">capacity_type</span>
+</span></span><span class="line"><span class="cl"><span class="n">  disk_size</span>      <span class="o">=</span> <span class="m">200</span><span class="c1">          # weights are big
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">scaling_config</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    min_size</span>     <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">min_size</span>
+</span></span><span class="line"><span class="cl"><span class="n">    max_size</span>     <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">max_size</span>
+</span></span><span class="line"><span class="cl"><span class="n">    desired_size</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">desired_size</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  update_config { max_unavailable_percentage</span> <span class="o">=</span> <span class="m">25</span> }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  labels</span> <span class="o">=</span> <span class="k">merge</span><span class="p">(</span><span class="k">local</span><span class="p">.</span><span class="k">base_labels</span><span class="p">,</span> <span class="k">var</span><span class="p">.</span><span class="k">labels</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">dynamic</span> <span class="s2">&#34;taint&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    for_each</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">taints</span>
+</span></span><span class="line"><span class="cl">    <span class="k">content</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      key</span>    <span class="o">=</span> <span class="k">taint</span><span class="p">.</span><span class="k">value</span><span class="p">.</span><span class="k">key</span>
+</span></span><span class="line"><span class="cl"><span class="n">      value</span>  <span class="o">=</span> <span class="k">taint</span><span class="p">.</span><span class="k">value</span><span class="p">.</span><span class="k">value</span>
+</span></span><span class="line"><span class="cl"><span class="n">      effect</span> <span class="o">=</span> <span class="k">taint</span><span class="p">.</span><span class="k">value</span><span class="p">.</span><span class="k">effect</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">dynamic</span> <span class="s2">&#34;capacity_reservation_specification&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    for_each</span> <span class="o">=</span><span class="n"> var.capacity_reservation_id</span> <span class="o">==</span> <span class="k">null</span> <span class="err">?</span> <span class="p">[]</span> <span class="err">:</span> <span class="p">[</span><span class="m">1</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">    <span class="k">content</span> {
+</span></span><span class="line"><span class="cl">      <span class="k">capacity_reservation_target</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        capacity_reservation_id</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">capacity_reservation_id</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  lifecycle { ignore_changes</span> <span class="o">=</span> <span class="p">[</span><span class="k">scaling_config</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="k">desired_size</span><span class="p">]</span> }
+</span></span><span class="line"><span class="cl"><span class="n">  tags</span> <span class="o">=</span><span class="n"> { &#34;k8s.io/cluster-autoscaler/${var.cluster_name}&#34;</span> <span class="o">=</span> <span class="s2">&#34;owned&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><h2 id="the-iam-piece-people-forget">The IAM piece people forget</h2>
+<p>The default node role docs forget that GPU nodes pulling weights from S3 also want <code>s3:GetObject</code> on the model bucket. Add it explicitly — never via <code>*</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;aws_iam_role_policy&#34; &#34;model_bucket_read&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  role</span> <span class="o">=</span> <span class="k">aws_iam_role</span><span class="p">.</span><span class="k">this</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  policy</span> <span class="o">=</span> <span class="k">jsonencode</span><span class="p">(</span>{
+</span></span><span class="line"><span class="cl"><span class="n">    Version</span> <span class="o">=</span> <span class="s2">&#34;2012-10-17&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    Statement</span> <span class="o">=</span> <span class="p">[</span>{
+</span></span><span class="line"><span class="cl"><span class="n">      Effect</span>   <span class="o">=</span> <span class="s2">&#34;Allow&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      Action</span>   <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;s3:GetObject&#34;, &#34;s3:ListBucket&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">      Resource</span> <span class="o">=</span> <span class="p">[</span>
+</span></span><span class="line"><span class="cl">        <span class="s2">&#34;arn:aws:s3:::${var.model_bucket}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="s2">&#34;arn:aws:s3:::${var.model_bucket}/*&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">      <span class="p">]</span>
+</span></span><span class="line"><span class="cl">    }<span class="p">]</span>
+</span></span><span class="line"><span class="cl">  }<span class="p">)</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Even better: do this at the <strong>pod</strong> level via <a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html">EKS Pod Identity</a> and skip it on the node role entirely. The node should know nothing about your weights.</p>
+<h2 id="using-it">Using it</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">module</span> <span class="s2">&#34;gpu_g5&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  source</span> <span class="o">=</span> <span class="s2">&#34;./modules/eks-gpu-nodegroup&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  cluster_name</span>   <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">eks</span><span class="p">.</span><span class="k">cluster_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_ids</span>     <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">vpc</span><span class="p">.</span><span class="k">private_subnets</span>
+</span></span><span class="line"><span class="cl"><span class="n">  instance_types</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;g5.2xlarge&#34;, &#34;g5.4xlarge&#34;</span><span class="p">]</span><span class="c1">   # let ASG pick
+</span></span></span><span class="line"><span class="cl"><span class="n">  capacity_type</span>  <span class="o">=</span> <span class="s2">&#34;SPOT&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  min_size</span>       <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl"><span class="n">  max_size</span>       <span class="o">=</span> <span class="m">12</span>
+</span></span><span class="line"><span class="cl"><span class="n">  labels</span>         <span class="o">=</span><span class="n"> { &#34;gpu.class&#34;</span> <span class="o">=</span> <span class="s2">&#34;a10g&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">module</span> <span class="s2">&#34;gpu_p4d_floor&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  source</span> <span class="o">=</span> <span class="s2">&#34;./modules/eks-gpu-nodegroup&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  cluster_name</span>             <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">eks</span><span class="p">.</span><span class="k">cluster_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_ids</span>               <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">vpc</span><span class="p">.</span><span class="k">private_subnets</span>
+</span></span><span class="line"><span class="cl"><span class="n">  instance_types</span>           <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;p4d.24xlarge&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  capacity_type</span>            <span class="o">=</span> <span class="s2">&#34;ON_DEMAND&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  min_size</span>                 <span class="o">=</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="n">  max_size</span>                 <span class="o">=</span> <span class="m">2</span>
+</span></span><span class="line"><span class="cl"><span class="n">  desired_size</span>             <span class="o">=</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="n">  capacity_reservation_id</span>  <span class="o">=</span> <span class="k">aws_ec2_capacity_reservation</span><span class="p">.</span><span class="k">p4d</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  labels</span>                   <span class="o">=</span><span class="n"> { &#34;gpu.class&#34;</span> <span class="o">=</span> <span class="s2">&#34;a100&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Two pools: one elastic on Spot, one fixed on a <a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html">Capacity Reservation</a>. Pods that absolutely must run choose <code>gpu.class: a100</code> via <code>nodeSelector</code>; everything else schedules on the cheap pool first.</p>
+<h2 id="why-managed-node-groups-not-karpenter-for-the-floor">Why managed node groups, not Karpenter, for the floor</h2>
+<p>Yes, I love <a href="/posts/karpenter-llm-autoscaling/">Karpenter</a>. But:</p>
+<ul>
+<li>Karpenter doesn&rsquo;t <em>own</em> a Capacity Reservation — it consumes capacity at request time.</li>
+<li>For your contractually-guaranteed baseline, you want a managed node group with <code>desired_size = N</code> and an attached ODCR. That capacity exists whether your software is healthy or not.</li>
+<li>Use Karpenter for the elastic shoulder above the baseline.</li>
+</ul>
+<h2 id="pitfalls">Pitfalls</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Symptom</th>
+          <th>Cause</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><code>0/3 nodes are available: 3 Insufficient nvidia.com/gpu</code></td>
+          <td>Device plugin not installed, or AMI is wrong (<code>AL2_x86_64</code> instead of <code>AL2023_x86_64_NVIDIA</code>)</td>
+      </tr>
+      <tr>
+          <td>Spot interruptions during model load</td>
+          <td>Add the <a href="https://github.com/aws/aws-node-termination-handler">Node Termination Handler</a> and a 120s <code>terminationGracePeriodSeconds</code></td>
+      </tr>
+      <tr>
+          <td>Disk fills up after a week</td>
+          <td>Weight cache + container layers. Set <code>disk_size = 200</code> minimum, use <a href="https://aws.amazon.com/ebs/general-purpose/"><code>gp3</code></a></td>
+      </tr>
+  </tbody>
+</table>
+<h2 id="source">Source</h2>
+<p>The full module lives at <a href="https://github.com/gmtreacy/aiops">github.com/gmtreacy/aiops</a> under <code>examples/eks-gpu-nodegroup/</code>.</p>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

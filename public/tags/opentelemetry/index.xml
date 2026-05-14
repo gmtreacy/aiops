@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Opentelemetry on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/opentelemetry/</link>
+    <description>Recent content in Opentelemetry on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Tue, 28 Apr 2026 09:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/opentelemetry/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Observability for LLM Workloads</title>
+      <link>https://gmtreacy.github.io/aiops/posts/observability-llm-workloads/</link>
+      <pubDate>Tue, 28 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/observability-llm-workloads/</guid>
+      <description>The minimum viable signals — and dashboards — for self-hosted inference. Tokens per second, p95 latency, and dollars per million tokens.</description>
+      <content:encoded><![CDATA[<p>Most monitoring stacks for LLM platforms are inherited from web services: requests, errors, durations. That&rsquo;s necessary but not sufficient. Tokens are not requests, and a p95 latency number that doesn&rsquo;t condition on prompt length is a lie.</p>
+<h2 id="the-three-signals">The three signals</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Signal</th>
+          <th>Where it comes from</th>
+          <th>What it tells you</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><strong>Tokens/sec per pod</strong></td>
+          <td>vLLM <code>/metrics</code></td>
+          <td>Are we using the GPU?</td>
+      </tr>
+      <tr>
+          <td><strong>TTFT and per-token latency</strong></td>
+          <td>vLLM <code>/metrics</code> + ingress traces</td>
+          <td>Are users waiting?</td>
+      </tr>
+      <tr>
+          <td><strong>$/Million tokens</strong></td>
+          <td>Cost Explorer + token counter</td>
+          <td>Is this affordable?</td>
+      </tr>
+  </tbody>
+</table>
+<h2 id="scraping-vllm">Scraping vLLM</h2>
+<p>vLLM exposes Prometheus metrics out of the box on <code>:8000/metrics</code>. Add a <code>ServiceMonitor</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">monitoring.coreos.com/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">ServiceMonitor</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">vllm</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l">inference</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">selector</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">matchLabels</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l">vllm }</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">endpoints</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l">http</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l">/metrics</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="l">15s</span><span class="w">
+</span></span></span></code></pre></div><p>The metrics that matter:</p>
+<ul>
+<li><code>vllm:num_requests_running</code> — current batch size</li>
+<li><code>vllm:num_requests_waiting</code> — queue depth (if this is non-zero you need more pods)</li>
+<li><code>vllm:gpu_cache_usage_perc</code> — KV cache pressure; sustained &gt; 0.95 means OOM is one big request away</li>
+<li><code>vllm:time_to_first_token_seconds</code> — TTFT histogram</li>
+<li><code>vllm:time_per_output_token_seconds</code> — generation speed</li>
+<li><code>vllm:prompt_tokens_total</code> / <code>vllm:generation_tokens_total</code> — counters for cost math</li>
+</ul>
+<h2 id="a-useful-promql-kit">A useful PromQL kit</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-promql" data-lang="promql"><span class="line"><span class="cl"><span class="c1"># tokens per second, per pod, smoothed</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">pod</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">vllm</span><span class="err">:</span><span class="nv">generation_tokens_total</span><span class="p">[</span><span class="s">1m</span><span class="p">]</span><span class="o">))</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># p95 TTFT, per model</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.95</span><span class="p">,</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">le</span><span class="p">,</span><span class="w"> </span><span class="nv">model</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">vllm</span><span class="err">:</span><span class="nv">time_to_first_token_seconds_bucket</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="o">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># queue pressure: pods where wait &gt; running for more than 2m</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="o">(</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="kr">avg_over_time</span><span class="o">(</span><span class="nv">vllm</span><span class="err">:</span><span class="nv">num_requests_waiting</span><span class="p">[</span><span class="s">2m</span><span class="p">]</span><span class="o">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="o">&gt;</span><span class="w"> </span><span class="kr">avg_over_time</span><span class="o">(</span><span class="nv">vllm</span><span class="err">:</span><span class="nv">num_requests_running</span><span class="p">[</span><span class="s">2m</span><span class="p">]</span><span class="o">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="o">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># KV cache headroom</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="mi">1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="k">max</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">pod</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="nv">vllm</span><span class="err">:</span><span class="nv">gpu_cache_usage_perc</span><span class="o">)</span><span class="w">
+</span></span></span></code></pre></div><p>That last one is the alert that prevents the most pages.</p>
+<h2 id="tracing-just-enough-opentelemetry">Tracing: just enough OpenTelemetry</h2>
+<p>vLLM doesn&rsquo;t emit traces natively (yet). Put the OTel collector in front of it as a sidecar or run it as an <a href="https://opentelemetry.io/docs/specs/otel/protocol/">OTel-aware proxy</a> at the Envoy / Ingress layer. You want one trace per <strong>request</strong> with these attributes:</p>
+<ul>
+<li><code>gen_ai.system = &quot;vllm&quot;</code></li>
+<li><code>gen_ai.request.model</code></li>
+<li><code>gen_ai.usage.input_tokens</code> / <code>gen_ai.usage.output_tokens</code></li>
+<li><code>gen_ai.response.finish_reason</code></li>
+</ul>
+<p>Ship to <a href="https://aws-otel.github.io/">AWS Distro for OpenTelemetry</a> → Tempo / X-Ray. Skip Jaeger; it cannot keep up with serious token volume.</p>
+<h2 id="dollars-per-million-tokens">Dollars per million tokens</h2>
+<p>This is the metric your CFO wants and the one you should put on the wall. The math is unglamorous:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">$/1M tokens = (instance $/hr × pod_count × hours)
+</span></span><span class="line"><span class="cl">              ───────────────────────────────────
+</span></span><span class="line"><span class="cl">              (Σ generation_tokens_total / 1e6)
+</span></span></code></pre></div><p>A small Lambda that runs every hour:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-python" data-lang="python"><span class="line"><span class="cl"><span class="c1"># lambda/cost_per_mtok.py</span>
+</span></span><span class="line"><span class="cl"><span class="kn">import</span> <span class="nn">boto3</span>
+</span></span><span class="line"><span class="cl"><span class="kn">import</span> <span class="nn">requests</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">PROM</span> <span class="o">=</span> <span class="s2">&#34;http://prometheus.observability:9090&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">def</span> <span class="nf">query</span><span class="p">(</span><span class="n">q</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">    <span class="n">r</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&#34;</span><span class="si">{</span><span class="n">PROM</span><span class="si">}</span><span class="s2">/api/v1/query&#34;</span><span class="p">,</span> <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">&#34;query&#34;</span><span class="p">:</span> <span class="n">q</span><span class="p">},</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">json</span><span class="p">()[</span><span class="s2">&#34;data&#34;</span><span class="p">][</span><span class="s2">&#34;result&#34;</span><span class="p">][</span><span class="mi">0</span><span class="p">][</span><span class="s2">&#34;value&#34;</span><span class="p">][</span><span class="mi">1</span><span class="p">])</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">def</span> <span class="nf">handler</span><span class="p">(</span><span class="n">_</span><span class="p">,</span> <span class="n">__</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">    <span class="n">tokens</span> <span class="o">=</span> <span class="n">query</span><span class="p">(</span><span class="s2">&#34;sum(increase(vllm:generation_tokens_total[1h]))&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="n">pods</span>   <span class="o">=</span> <span class="n">query</span><span class="p">(</span><span class="s2">&#34;sum(kube_pod_info{namespace=&#39;inference&#39;})&#34;</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">    <span class="n">rate</span>   <span class="o">=</span> <span class="mf">1.21</span>  <span class="c1"># g5.2xlarge $/hr; pull from Pricing API in real life</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">cost_per_mtok</span> <span class="o">=</span> <span class="p">(</span><span class="n">rate</span> <span class="o">*</span> <span class="n">pods</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">tokens</span> <span class="o">/</span> <span class="mf">1e6</span><span class="p">)</span> <span class="k">if</span> <span class="n">tokens</span> <span class="k">else</span> <span class="mi">0</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="n">boto3</span><span class="o">.</span><span class="n">client</span><span class="p">(</span><span class="s2">&#34;cloudwatch&#34;</span><span class="p">)</span><span class="o">.</span><span class="n">put_metric_data</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="n">Namespace</span><span class="o">=</span><span class="s2">&#34;aiops&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">MetricData</span><span class="o">=</span><span class="p">[{</span>
+</span></span><span class="line"><span class="cl">            <span class="s2">&#34;MetricName&#34;</span><span class="p">:</span> <span class="s2">&#34;DollarsPerMillionTokens&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="s2">&#34;Value&#34;</span><span class="p">:</span> <span class="n">cost_per_mtok</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">            <span class="s2">&#34;Unit&#34;</span><span class="p">:</span> <span class="s2">&#34;None&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="p">}],</span>
+</span></span><span class="line"><span class="cl">    <span class="p">)</span>
+</span></span></code></pre></div><p>Now you can alert on it: if <code>$/1M tokens</code> jumps 30% week-over-week, <strong>something</strong> changed — usually a model upgrade or a regression in batching efficiency.</p>
+<p>There&rsquo;s a longer post on the cost side at <a href="/posts/finops-dollars-per-million-tokens/">$/Million Tokens</a>.</p>
+<h2 id="a-starter-grafana-dashboard">A starter Grafana dashboard</h2>
+<p>Three rows, six panels:</p>
+<ol>
+<li><strong>Capacity</strong> — tokens/sec per pod (timeseries), GPU utilization (gauge)</li>
+<li><strong>Quality</strong> — TTFT p50/p95 (timeseries), per-token latency p95 (timeseries)</li>
+<li><strong>Cost</strong> — $/1M tokens (stat), spot interruption rate (timeseries)</li>
+</ol>
+<p>That&rsquo;s the whole dashboard. Anything beyond is for the deep-dive panel.</p>
+<h2 id="alerts-that-earn-their-keep">Alerts that earn their keep</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Alert</th>
+          <th>Threshold</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><code>vllm:num_requests_waiting &gt; 50</code> for 5m</td>
+          <td>Capacity is short — scale or rate-limit</td>
+      </tr>
+      <tr>
+          <td><code>vllm:gpu_cache_usage_perc &gt; 0.95</code> for 2m</td>
+          <td>KV pressure — restart imminent</td>
+      </tr>
+      <tr>
+          <td><code>karpenter_pods_startup_time_seconds:p95 &gt; 180s</code> for 15m</td>
+          <td>Scale-up is slow — capacity issues</td>
+      </tr>
+      <tr>
+          <td><code>aiops_dollars_per_million_tokens &gt; $1.50</code></td>
+          <td>Anomaly — investigate before next bill</td>
+      </tr>
+  </tbody>
+</table>
+<p>Skip the rest until they bite you.</p>
+<h2 id="references">References</h2>
+<ul>
+<li><a href="https://docs.vllm.ai/en/latest/serving/metrics.html">vLLM metrics docs</a></li>
+<li><a href="https://opentelemetry.io/docs/specs/semconv/gen-ai/">OpenTelemetry GenAI semantic conventions</a></li>
+<li><a href="https://aws.amazon.com/prometheus/">AWS Managed Prometheus / Grafana</a></li>
+</ul>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

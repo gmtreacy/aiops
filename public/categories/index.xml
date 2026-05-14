@@ -1,11 +1,47 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
-    <title>Categories on AI Ops</title>
-    <link>http://localhost:1313/aiops/categories/</link>
-    <description>Recent content in Categories on AI Ops</description>
+    <title>Categories on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/categories/</link>
+    <description>Recent content in Categories on AI Ops Field Notes</description>
     <generator>Hugo</generator>
     <language>en-us</language>
-    <atom:link href="http://localhost:1313/aiops/categories/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Thu, 14 May 2026 08:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/categories/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Meta</title>
+      <link>https://gmtreacy.github.io/aiops/categories/meta/</link>
+      <pubDate>Thu, 14 May 2026 08:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/categories/meta/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Infrastructure</title>
+      <link>https://gmtreacy.github.io/aiops/categories/infrastructure/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/categories/infrastructure/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Inference</title>
+      <link>https://gmtreacy.github.io/aiops/categories/inference/</link>
+      <pubDate>Fri, 08 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/categories/inference/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Observability</title>
+      <link>https://gmtreacy.github.io/aiops/categories/observability/</link>
+      <pubDate>Tue, 28 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/categories/observability/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Finops</title>
+      <link>https://gmtreacy.github.io/aiops/categories/finops/</link>
+      <pubDate>Wed, 22 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/categories/finops/</guid>
+      <description></description>
+    </item>
   </channel>
 </rss>

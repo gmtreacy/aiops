@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Architecture on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/architecture/</link>
+    <description>Recent content in Architecture on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Sun, 10 May 2026 09:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/architecture/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>An LLM Platform on AWS, End to End</title>
+      <link>https://gmtreacy.github.io/aiops/posts/aiops-on-aws-overview/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/aiops-on-aws-overview/</guid>
+      <description>A reference architecture for hosting open-weights models on AWS — from edge to GPU — and the boring decisions that decide whether it actually works.</description>
+      <content:encoded><![CDATA[<p>Most &ldquo;LLM platform&rdquo; diagrams hand-wave the parts that matter. This one tries not to.</p>
+<h2 id="the-shape-of-it">The shape of it</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">   ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
+</span></span><span class="line"><span class="cl">   │  Client │ ─▶ │ ALB / API GW │ ─▶ │ EKS Ingress  │ ─▶ │  vLLM Pods  │
+</span></span><span class="line"><span class="cl">   └─────────┘    └──────────────┘    └──────────────┘    └─────────────┘
+</span></span><span class="line"><span class="cl">                       │                     │                   │
+</span></span><span class="line"><span class="cl">                       ▼                     ▼                   ▼
+</span></span><span class="line"><span class="cl">                  WAF + Cognito        Karpenter scales       g5/p4d/p5
+</span></span><span class="line"><span class="cl">                  rate limit + JWT      GPU NodePools        SPOT + ODCR
+</span></span><span class="line"><span class="cl">                       │                     │                   │
+</span></span><span class="line"><span class="cl">                       └────────── OpenTelemetry / Prometheus ───┘
+</span></span><span class="line"><span class="cl">                                            │
+</span></span><span class="line"><span class="cl">                                            ▼
+</span></span><span class="line"><span class="cl">                                  Managed Grafana + S3 logs
+</span></span></code></pre></div><p>Everything that follows is a justification or a regret about one of those boxes.</p>
+<h2 id="edge-alb-vs-api-gateway">Edge: ALB vs API Gateway</h2>
+<p>For LLM traffic you almost always want <strong>ALB + WAF</strong>, not API Gateway. Three reasons:</p>
+<ol>
+<li><strong>Streaming</strong>: vLLM speaks SSE / chunked transfer. ALB streams it; API Gateway buffers up to its hard timeout.</li>
+<li><strong>Long tails</strong>: a single 70B-class request can run 60+ seconds. API Gateway&rsquo;s 29s integration timeout will quietly murder it.</li>
+<li><strong>Cost</strong>: at 1k req/s the per-request charge on API Gateway dwarfs the LB hour.</li>
+</ol>
+<p>If you need <a href="https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api.html">WebSockets</a>, API Gateway is back on the table — but most chat clients still get more done with SSE.</p>
+<h2 id="cluster-one-eks-multiple-node-groups">Cluster: one EKS, multiple node groups</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="n">node_groups</span> <span class="o">=</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  system</span>  <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;m6i.large&#34;],   min</span> <span class="o">=</span><span class="n"> 2, max</span> <span class="o">=</span> <span class="m">4</span>  }
+</span></span><span class="line"><span class="cl"><span class="n">  cpu</span>     <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;m6i.2xlarge&#34;], min</span> <span class="o">=</span><span class="n"> 2, max</span> <span class="o">=</span> <span class="m">20</span> }
+</span></span><span class="line"><span class="cl"><span class="n">  gpu_g5</span>  <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;g5.2xlarge&#34;],  min</span> <span class="o">=</span><span class="n"> 0, max</span> <span class="o">=</span><span class="n"> 12, capacity_type</span> <span class="o">=</span> <span class="s2">&#34;SPOT&#34;</span> }
+</span></span><span class="line"><span class="cl"><span class="n">  gpu_p4d</span> <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;p4d.24xlarge&#34;],min</span> <span class="o">=</span><span class="n"> 0, max</span> <span class="o">=</span><span class="n"> 2,  capacity_type</span> <span class="o">=</span> <span class="s2">&#34;ON_DEMAND&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>The system pool runs the cluster&rsquo;s nervous system: CoreDNS, Karpenter itself, the AWS Load Balancer Controller, <a href="https://cert-manager.io/"><code>cert-manager</code></a>, <a href="https://external-secrets.io/"><code>external-secrets</code></a>. Don&rsquo;t let Karpenter manage these — circular dependency.</p>
+<h2 id="inference-vllm-not-roll-your-own-transformers">Inference: vLLM, not &ldquo;roll-your-own Transformers&rdquo;</h2>
+<p>I have seen at least four teams write their own batching server because it &ldquo;looked simple.&rdquo; None of them shipped. vLLM gets you:</p>
+<ul>
+<li><a href="https://blog.vllm.ai/2023/06/20/vllm.html">PagedAttention</a> — KV cache that doesn&rsquo;t fragment</li>
+<li>Continuous batching — fills the GPU instead of starving it between requests</li>
+<li>An OpenAI-compatible API — your client SDKs Just Work</li>
+</ul>
+<p>There&rsquo;s a deeper post on this at <a href="/posts/vllm-on-eks/">vLLM on EKS</a>.</p>
+<h2 id="gpus-the-only-line-item-that-matters">GPUs: the only line item that matters</h2>
+<p>Pricing is from <a href="https://aws.amazon.com/ec2/pricing/on-demand/">AWS On-Demand Pricing</a>, as of writing — verify before you quote anyone.</p>
+<table>
+  <thead>
+      <tr>
+          <th>Instance</th>
+          <th>GPU</th>
+          <th>VRAM</th>
+          <th>$/hr (on-demand)</th>
+          <th>Use it for</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><code>g5.2xlarge</code></td>
+          <td>1× A10G</td>
+          <td>24 GB</td>
+          <td>~$1.21</td>
+          <td>7-13B serving</td>
+      </tr>
+      <tr>
+          <td><code>g6.12xlarge</code></td>
+          <td>4× L4</td>
+          <td>96 GB</td>
+          <td>~$4.92</td>
+          <td>mid-size + multi-tenant</td>
+      </tr>
+      <tr>
+          <td><code>p4d.24xlarge</code></td>
+          <td>8× A100</td>
+          <td>320 GB</td>
+          <td>~$32.77</td>
+          <td>70B serving / fine-tune</td>
+      </tr>
+      <tr>
+          <td><code>p5.48xlarge</code></td>
+          <td>8× H100</td>
+          <td>640 GB</td>
+          <td>~$98</td>
+          <td>frontier serving</td>
+      </tr>
+  </tbody>
+</table>
+<p>Mix <strong>Spot</strong> for elastic serving and an <strong><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html">On-Demand Capacity Reservation</a></strong> for the floor you cannot lose. <a href="/posts/karpenter-llm-autoscaling/">Karpenter</a> handles the rest.</p>
+<h2 id="identity-irsa-or-pod-identity-never-node-iam">Identity: IRSA or pod identity, never node IAM</h2>
+<p>Bedrock, S3, KMS — every one of those calls should be made from the pod&rsquo;s own role, never the node&rsquo;s. Use <a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html">EKS Pod Identity</a> on new clusters; <a href="https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html">IRSA</a> on older ones. Pod Identity is faster and avoids OIDC trust-policy gymnastics.</p>
+<h2 id="observability-three-signals">Observability: three signals</h2>
+<p>You only need three to start:</p>
+<ul>
+<li><strong>Tokens/sec per pod</strong> (from vLLM&rsquo;s <code>/metrics</code>) — capacity</li>
+<li><strong>End-to-end p95</strong> (from your Envoy / ingress) — quality</li>
+<li><strong>$/1M tokens</strong> (CloudWatch + Cost Explorer + a small lambda) — sanity</li>
+</ul>
+<p>More on that in <a href="/posts/observability-llm-workloads/">Observability for LLM workloads</a>.</p>
+<h2 id="what-this-series-will-cover">What this series will cover</h2>
+<ul>
+<li><a href="/posts/vllm-on-eks/">vLLM on EKS, properly tuned</a></li>
+<li><a href="/posts/terraform-eks-gpu-nodegroup/">Terraform module for GPU node groups</a></li>
+<li><a href="/posts/karpenter-llm-autoscaling/">Karpenter for LLM autoscaling</a></li>
+<li><a href="/posts/observability-llm-workloads/">Observability for LLM workloads</a></li>
+<li><a href="/posts/finops-dollars-per-million-tokens/">The $/Million-Tokens metric</a></li>
+</ul>
+<p>If a box in the diagram is missing a post, that&rsquo;s the backlog.</p>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#082f49"/>
+      <stop offset="100%" stop-color="#0c4a6e"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g font-family="ui-sans-serif, system-ui" fill="#e0f2fe">
+    <text x="80" y="140" font-size="28" fill="#7dd3fc">// architecture</text>
+    <text x="80" y="220" font-size="64" font-weight="800">AI Ops on AWS</text>
+    <text x="80" y="276" font-size="32" fill="#bae6fd">A reference architecture for LLM platforms</text>
+  </g>
+  <g transform="translate(80,360)" stroke="#38bdf8" stroke-width="2" fill="none">
+    <rect x="0" y="0" width="200" height="80" rx="10" fill="#0369a1"/>
+    <rect x="280" y="0" width="200" height="80" rx="10" fill="#0369a1"/>
+    <rect x="560" y="0" width="200" height="80" rx="10" fill="#0369a1"/>
+    <rect x="840" y="0" width="200" height="80" rx="10" fill="#7c3aed"/>
+    <path d="M200 40 H280 M480 40 H560 M760 40 H840" stroke="#7dd3fc"/>
+    <polygon points="278,36 286,40 278,44" fill="#7dd3fc" stroke="none"/>
+    <polygon points="558,36 566,40 558,44" fill="#7dd3fc" stroke="none"/>
+    <polygon points="838,36 846,40 838,44" fill="#7dd3fc" stroke="none"/>
+  </g>
+  <g font-family="ui-sans-serif, system-ui" font-size="20" fill="#f0f9ff" text-anchor="middle">
+    <text x="180" y="408">ALB / API GW</text>
+    <text x="460" y="408">EKS Ingress</text>
+    <text x="740" y="408">vLLM Pods</text>
+    <text x="1020" y="408">GPU Nodes</text>
+  </g>
+</svg>

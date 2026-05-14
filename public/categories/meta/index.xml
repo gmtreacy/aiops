@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Meta on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/categories/meta/</link>
+    <description>Recent content in Meta on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Thu, 14 May 2026 08:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/categories/meta/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Welcome to AI Ops Field Notes</title>
+      <link>https://gmtreacy.github.io/aiops/posts/welcome/</link>
+      <pubDate>Thu, 14 May 2026 08:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/welcome/</guid>
+      <description>What this site is, who it&amp;rsquo;s for, and the rough territory it covers — running LLM workloads on AWS without losing the plot.</description>
+      <content:encoded><![CDATA[<p>This is a working notebook for one specific intersection: <strong>large language models</strong> and <strong>AWS-native Kubernetes</strong>. The pieces that show up over and over here are:</p>
+<ul>
+<li><a href="https://aws.amazon.com/eks/">Amazon EKS</a> for the cluster</li>
+<li><a href="https://karpenter.sh/">Karpenter</a> for GPU node provisioning</li>
+<li><a href="https://github.com/vllm-project/vllm">vLLM</a> for inference</li>
+<li><a href="https://www.terraform.io/">Terraform</a> / <a href="https://terragrunt.gruntwork.io/">Terragrunt</a> for everything reproducible</li>
+<li><a href="https://prometheus.io/">Prometheus</a>, <a href="https://opentelemetry.io/">OpenTelemetry</a>, and <a href="https://aws.amazon.com/cloudwatch/">CloudWatch</a> for the signals</li>
+</ul>
+<h2 id="who-this-is-for">Who this is for</h2>
+<p>Engineers who already know how to read a <code>kubectl describe pod</code> and now have a model-serving SLO on their plate. We will not stop to explain what a Pod is.</p>
+<h2 id="what-it-isnt">What it isn&rsquo;t</h2>
+<p>A vendor blog, a benchmark leaderboard, or anything written by an LLM with the temperature cranked up. Posts here only ship after they&rsquo;ve been run on real infrastructure.</p>
+<h2 id="getting-around">Getting around</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Section</th>
+          <th>What&rsquo;s there</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><a href="/posts/">Posts</a></td>
+          <td>Every article in reverse-chronological order</td>
+      </tr>
+      <tr>
+          <td><a href="/categories/">Categories</a></td>
+          <td>Larger themes — <code>infrastructure</code>, <code>inference</code>, <code>observability</code>, <code>finops</code></td>
+      </tr>
+      <tr>
+          <td><a href="/tags/">Tags</a></td>
+          <td>Specific tools — <code>eks</code>, <code>vllm</code>, <code>karpenter</code>, <code>terraform</code>, etc.</td>
+      </tr>
+      <tr>
+          <td><a href="/archives/">Archive</a></td>
+          <td>Year-grouped index</td>
+      </tr>
+  </tbody>
+</table>
+<p>If something here is wrong, <a href="https://github.com/gmtreacy/aiops">open an issue or PR</a>. Corrections welcomed; opinions optional.</p>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

@@ -1,4 +1,151 @@
-baseURL = 'https://gmtreacy.github.io/aiops/'
-locale = 'en-us'
-title = 'AI Ops'
-theme = 'PaperMod'
+baseURL = "https://gmtreacy.github.io/aiops/"
+languageCode = "en-us"
+title = "AI Ops Field Notes"
+theme = "PaperMod"
+
+enableRobotsTXT = true
+buildDrafts = false
+buildFuture = false
+buildExpired = false
+
+pagination.pagerSize = 8
+
+[minify]
+  disableXML = true
+  minifyOutput = true
+
+[outputs]
+  home = ["HTML", "RSS", "JSON"]
+
+[taxonomies]
+  category = "categories"
+  tag = "tags"
+  series = "series"
+
+[markup]
+  [markup.goldmark.renderer]
+    unsafe = true
+  [markup.highlight]
+    style = "monokai"
+    lineNos = false
+    codeFences = true
+    guessSyntax = true
+    noClasses = false
+    tabWidth = 2
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 4
+    ordered = false
+
+[params]
+  env = "production"
+  description = "Notes on running AI/LLM workloads on AWS — EKS, vLLM, Terraform, Karpenter, and the observability that keeps it honest."
+  author = "George Treacy"
+  keywords = ["AIOps", "AWS", "EKS", "Kubernetes", "vLLM", "Terraform", "Karpenter", "GPU", "LLM"]
+  defaultTheme = "auto"
+  disableThemeToggle = false
+  ShowReadingTime = true
+  ShowShareButtons = true
+  ShowPostNavLinks = true
+  ShowBreadCrumbs = true
+  ShowCodeCopyButtons = true
+  ShowWordCount = true
+  ShowRssButtonInSectionTermList = true
+  ShowToc = true
+  TocOpen = false
+  ShowFullTextinRSS = true
+  comments = false
+  hidemeta = false
+  hideSummary = false
+  mainSections = ["posts"]
+  DateFormat = "2 January 2006"
+
+  [params.assets]
+    disableHLJS = true
+    favicon = "/img/favicon.svg"
+    favicon16x16 = "/img/favicon.svg"
+    favicon32x32 = "/img/favicon.svg"
+    apple_touch_icon = "/img/favicon.svg"
+    safari_pinned_tab = "/img/favicon.svg"
+
+  [params.label]
+    text = "AI Ops Field Notes"
+    icon = "/img/logo.svg"
+    iconHeight = 28
+
+  [params.homeInfoParams]
+    Title = "AI Ops Field Notes"
+    Content = """
+Pragmatic notes on running large-language-model workloads on AWS.
+
+- Kubernetes-first: **EKS**, **Karpenter**, **vLLM**, **KServe**.
+- Infrastructure as code with **Terraform** and **Terragrunt**.
+- Observability that ties **token throughput** to **GPU $/hr**.
+- Less hype, more `kubectl describe`.
+
+Browse the [archive](archives/), or jump straight into the latest post below.
+"""
+
+  [[params.socialIcons]]
+    name = "github"
+    url = "https://github.com/gmtreacy"
+  [[params.socialIcons]]
+    name = "rss"
+    url = "index.xml"
+
+  [params.cover]
+    hidden = false
+    hiddenInList = false
+    hiddenInSingle = false
+    responsiveImages = true
+    linkFullImages = true
+
+  [params.editPost]
+    URL = "https://github.com/gmtreacy/aiops/blob/main/content"
+    Text = "Suggest an edit"
+    appendFilePath = true
+
+  [params.fuseOpts]
+    isCaseSensitive = false
+    shouldSort = true
+    location = 0
+    distance = 1000
+    threshold = 0.4
+    minMatchCharLength = 0
+    keys = ["title", "permalink", "summary", "content"]
+
+[[menu.main]]
+  identifier = "posts"
+  name = "Posts"
+  url = "/posts/"
+  weight = 10
+
+[[menu.main]]
+  identifier = "categories"
+  name = "Categories"
+  url = "/categories/"
+  weight = 20
+
+[[menu.main]]
+  identifier = "tags"
+  name = "Tags"
+  url = "/tags/"
+  weight = 30
+
+[[menu.main]]
+  identifier = "archives"
+  name = "Archive"
+  url = "/archives/"
+  weight = 40
+
+[[menu.main]]
+  identifier = "search"
+  name = "Search"
+  url = "/search/"
+  weight = 50
+
+[[menu.main]]
+  identifier = "about"
+  name = "About"
+  url = "/about/"
+  weight = 60

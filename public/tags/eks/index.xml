@@ -1,0 +1,539 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Eks on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/eks/</link>
+    <description>Recent content in Eks on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Sun, 10 May 2026 09:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/eks/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>An LLM Platform on AWS, End to End</title>
+      <link>https://gmtreacy.github.io/aiops/posts/aiops-on-aws-overview/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/aiops-on-aws-overview/</guid>
+      <description>A reference architecture for hosting open-weights models on AWS — from edge to GPU — and the boring decisions that decide whether it actually works.</description>
+      <content:encoded><![CDATA[<p>Most &ldquo;LLM platform&rdquo; diagrams hand-wave the parts that matter. This one tries not to.</p>
+<h2 id="the-shape-of-it">The shape of it</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">   ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
+</span></span><span class="line"><span class="cl">   │  Client │ ─▶ │ ALB / API GW │ ─▶ │ EKS Ingress  │ ─▶ │  vLLM Pods  │
+</span></span><span class="line"><span class="cl">   └─────────┘    └──────────────┘    └──────────────┘    └─────────────┘
+</span></span><span class="line"><span class="cl">                       │                     │                   │
+</span></span><span class="line"><span class="cl">                       ▼                     ▼                   ▼
+</span></span><span class="line"><span class="cl">                  WAF + Cognito        Karpenter scales       g5/p4d/p5
+</span></span><span class="line"><span class="cl">                  rate limit + JWT      GPU NodePools        SPOT + ODCR
+</span></span><span class="line"><span class="cl">                       │                     │                   │
+</span></span><span class="line"><span class="cl">                       └────────── OpenTelemetry / Prometheus ───┘
+</span></span><span class="line"><span class="cl">                                            │
+</span></span><span class="line"><span class="cl">                                            ▼
+</span></span><span class="line"><span class="cl">                                  Managed Grafana + S3 logs
+</span></span></code></pre></div><p>Everything that follows is a justification or a regret about one of those boxes.</p>
+<h2 id="edge-alb-vs-api-gateway">Edge: ALB vs API Gateway</h2>
+<p>For LLM traffic you almost always want <strong>ALB + WAF</strong>, not API Gateway. Three reasons:</p>
+<ol>
+<li><strong>Streaming</strong>: vLLM speaks SSE / chunked transfer. ALB streams it; API Gateway buffers up to its hard timeout.</li>
+<li><strong>Long tails</strong>: a single 70B-class request can run 60+ seconds. API Gateway&rsquo;s 29s integration timeout will quietly murder it.</li>
+<li><strong>Cost</strong>: at 1k req/s the per-request charge on API Gateway dwarfs the LB hour.</li>
+</ol>
+<p>If you need <a href="https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api.html">WebSockets</a>, API Gateway is back on the table — but most chat clients still get more done with SSE.</p>
+<h2 id="cluster-one-eks-multiple-node-groups">Cluster: one EKS, multiple node groups</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="n">node_groups</span> <span class="o">=</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  system</span>  <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;m6i.large&#34;],   min</span> <span class="o">=</span><span class="n"> 2, max</span> <span class="o">=</span> <span class="m">4</span>  }
+</span></span><span class="line"><span class="cl"><span class="n">  cpu</span>     <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;m6i.2xlarge&#34;], min</span> <span class="o">=</span><span class="n"> 2, max</span> <span class="o">=</span> <span class="m">20</span> }
+</span></span><span class="line"><span class="cl"><span class="n">  gpu_g5</span>  <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;g5.2xlarge&#34;],  min</span> <span class="o">=</span><span class="n"> 0, max</span> <span class="o">=</span><span class="n"> 12, capacity_type</span> <span class="o">=</span> <span class="s2">&#34;SPOT&#34;</span> }
+</span></span><span class="line"><span class="cl"><span class="n">  gpu_p4d</span> <span class="o">=</span><span class="n"> { instance_types</span> <span class="o">=</span><span class="n"> [&#34;p4d.24xlarge&#34;],min</span> <span class="o">=</span><span class="n"> 0, max</span> <span class="o">=</span><span class="n"> 2,  capacity_type</span> <span class="o">=</span> <span class="s2">&#34;ON_DEMAND&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>The system pool runs the cluster&rsquo;s nervous system: CoreDNS, Karpenter itself, the AWS Load Balancer Controller, <a href="https://cert-manager.io/"><code>cert-manager</code></a>, <a href="https://external-secrets.io/"><code>external-secrets</code></a>. Don&rsquo;t let Karpenter manage these — circular dependency.</p>
+<h2 id="inference-vllm-not-roll-your-own-transformers">Inference: vLLM, not &ldquo;roll-your-own Transformers&rdquo;</h2>
+<p>I have seen at least four teams write their own batching server because it &ldquo;looked simple.&rdquo; None of them shipped. vLLM gets you:</p>
+<ul>
+<li><a href="https://blog.vllm.ai/2023/06/20/vllm.html">PagedAttention</a> — KV cache that doesn&rsquo;t fragment</li>
+<li>Continuous batching — fills the GPU instead of starving it between requests</li>
+<li>An OpenAI-compatible API — your client SDKs Just Work</li>
+</ul>
+<p>There&rsquo;s a deeper post on this at <a href="/posts/vllm-on-eks/">vLLM on EKS</a>.</p>
+<h2 id="gpus-the-only-line-item-that-matters">GPUs: the only line item that matters</h2>
+<p>Pricing is from <a href="https://aws.amazon.com/ec2/pricing/on-demand/">AWS On-Demand Pricing</a>, as of writing — verify before you quote anyone.</p>
+<table>
+  <thead>
+      <tr>
+          <th>Instance</th>
+          <th>GPU</th>
+          <th>VRAM</th>
+          <th>$/hr (on-demand)</th>
+          <th>Use it for</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><code>g5.2xlarge</code></td>
+          <td>1× A10G</td>
+          <td>24 GB</td>
+          <td>~$1.21</td>
+          <td>7-13B serving</td>
+      </tr>
+      <tr>
+          <td><code>g6.12xlarge</code></td>
+          <td>4× L4</td>
+          <td>96 GB</td>
+          <td>~$4.92</td>
+          <td>mid-size + multi-tenant</td>
+      </tr>
+      <tr>
+          <td><code>p4d.24xlarge</code></td>
+          <td>8× A100</td>
+          <td>320 GB</td>
+          <td>~$32.77</td>
+          <td>70B serving / fine-tune</td>
+      </tr>
+      <tr>
+          <td><code>p5.48xlarge</code></td>
+          <td>8× H100</td>
+          <td>640 GB</td>
+          <td>~$98</td>
+          <td>frontier serving</td>
+      </tr>
+  </tbody>
+</table>
+<p>Mix <strong>Spot</strong> for elastic serving and an <strong><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html">On-Demand Capacity Reservation</a></strong> for the floor you cannot lose. <a href="/posts/karpenter-llm-autoscaling/">Karpenter</a> handles the rest.</p>
+<h2 id="identity-irsa-or-pod-identity-never-node-iam">Identity: IRSA or pod identity, never node IAM</h2>
+<p>Bedrock, S3, KMS — every one of those calls should be made from the pod&rsquo;s own role, never the node&rsquo;s. Use <a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html">EKS Pod Identity</a> on new clusters; <a href="https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html">IRSA</a> on older ones. Pod Identity is faster and avoids OIDC trust-policy gymnastics.</p>
+<h2 id="observability-three-signals">Observability: three signals</h2>
+<p>You only need three to start:</p>
+<ul>
+<li><strong>Tokens/sec per pod</strong> (from vLLM&rsquo;s <code>/metrics</code>) — capacity</li>
+<li><strong>End-to-end p95</strong> (from your Envoy / ingress) — quality</li>
+<li><strong>$/1M tokens</strong> (CloudWatch + Cost Explorer + a small lambda) — sanity</li>
+</ul>
+<p>More on that in <a href="/posts/observability-llm-workloads/">Observability for LLM workloads</a>.</p>
+<h2 id="what-this-series-will-cover">What this series will cover</h2>
+<ul>
+<li><a href="/posts/vllm-on-eks/">vLLM on EKS, properly tuned</a></li>
+<li><a href="/posts/terraform-eks-gpu-nodegroup/">Terraform module for GPU node groups</a></li>
+<li><a href="/posts/karpenter-llm-autoscaling/">Karpenter for LLM autoscaling</a></li>
+<li><a href="/posts/observability-llm-workloads/">Observability for LLM workloads</a></li>
+<li><a href="/posts/finops-dollars-per-million-tokens/">The $/Million-Tokens metric</a></li>
+</ul>
+<p>If a box in the diagram is missing a post, that&rsquo;s the backlog.</p>
+]]></content:encoded>
+    </item>
+    <item>
+      <title>vLLM on EKS, Properly Tuned</title>
+      <link>https://gmtreacy.github.io/aiops/posts/vllm-on-eks/</link>
+      <pubDate>Fri, 08 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/vllm-on-eks/</guid>
+      <description>Helm values, GPU memory tuning, and the half-dozen knobs that decide whether your tokens-per-second number is real or aspirational.</description>
+      <content:encoded><![CDATA[<p><a href="https://github.com/vllm-project/vllm">vLLM</a> is the right default for self-hosted LLM serving in 2026. The first time you deploy it you will get something that &ldquo;works&rdquo; and uses 30% of the GPU. This post is how to get the other 70%.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>An EKS cluster with a GPU node group (see <a href="/posts/terraform-eks-gpu-nodegroup/">Terraform GPU node group</a>)</li>
+<li>The <a href="https://github.com/NVIDIA/k8s-device-plugin">NVIDIA device plugin</a> installed</li>
+<li><a href="https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/"><code>nvidia.com/gpu</code></a> showing up under <code>kubectl describe node</code></li>
+</ul>
+<p>If <code>kubectl get pods -n kube-system | grep nvidia</code> is empty, stop and fix that first. Nothing else will work.</p>
+<h2 id="the-minimum-viable-helm-values">The minimum viable Helm values</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># values.yaml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">image</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">repository</span><span class="p">:</span><span class="w"> </span><span class="l">vllm/vllm-openai</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="l">v0.6.3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l">meta-llama/Llama-3.1-8B-Instruct</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">resources</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">limits</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l">32Gi</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">requests</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l">24Gi</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">extraArgs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">gpu-memory-utilization=0.92</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">max-model-len=8192</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">max-num-seqs=128</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">enable-prefix-caching</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">kv-cache-dtype=fp8</span><span class="w">
+</span></span></span></code></pre></div><p>Apply with:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">helm repo add vllm https://vllm-project.github.io/vllm
+</span></span><span class="line"><span class="cl">helm upgrade --install vllm vllm/vllm -n inference -f values.yaml
+</span></span></code></pre></div><h2 id="the-knobs-that-actually-matter">The knobs that actually matter</h2>
+<h3 id="--gpu-memory-utilization"><code>--gpu-memory-utilization</code></h3>
+<p>The default is <code>0.9</code>. On a clean A10G with no other tenants you can push to <strong>0.92</strong>. Don&rsquo;t go higher: vLLM needs scratch space for activations and the OOM killer is a poor diagnostic tool.</p>
+<h3 id="--max-model-len"><code>--max-model-len</code></h3>
+<p>Set this to the <strong>longest prompt + response you actually serve</strong>, not the model&rsquo;s max. An 8B model nominally supports 128K but the KV cache for that is <em>enormous</em> — it costs you batch slots. If 95% of traffic is &lt; 8K, set 8192 and refuse the rest.</p>
+<h3 id="--max-num-seqs"><code>--max-num-seqs</code></h3>
+<p>The continuous-batching ceiling. Higher = more concurrency, lower per-request latency variance, more memory pressure. Start at 128, watch <code>vllm:num_requests_running</code> in <a href="/posts/observability-llm-workloads/">Prometheus</a>, nudge until p95 latency starts to climb.</p>
+<h3 id="--enable-prefix-caching"><code>--enable-prefix-caching</code></h3>
+<p>Free 2-5× speedup if your traffic has shared prefixes (system prompts, RAG context). Off by default. Turn it on.</p>
+<h3 id="--kv-cache-dtypefp8"><code>--kv-cache-dtype=fp8</code></h3>
+<p>Halves KV cache memory at the cost of about 0.5% on quality benchmarks. On Hopper / Ada this is essentially free. On Ampere, benchmark first.</p>
+<h2 id="tensor-parallelism-when-not-whether">Tensor parallelism: when, not whether</h2>
+<p>For 70B-class models on a single <code>p4d.24xlarge</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">extraArgs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">tensor-parallel-size=8</span><span class="w">
+</span></span></span></code></pre></div><p>Rules:</p>
+<ol>
+<li><code>tensor-parallel-size</code> must divide the model&rsquo;s attention head count.</li>
+<li>All ranks must be on the <strong>same node</strong> unless you have NVLink fabric. Cross-node tensor parallel over the EKS pod network is a recipe for sadness.</li>
+<li>Use <code>topology.kubernetes.io/zone</code> and a <code>podAntiAffinity</code> to keep one TP group per node.</li>
+</ol>
+<h2 id="the-pod-spec-with-the-bits-people-forget">The pod spec, with the bits people forget</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">apps/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Deployment</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">vllm-llama3-8b</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">template</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">runtimeClassName</span><span class="p">:</span><span class="w"> </span><span class="l">nvidia</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">terminationGracePeriodSeconds</span><span class="p">:</span><span class="w"> </span><span class="m">120</span><span class="w">  </span><span class="c"># let in-flight requests drain</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">containers</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">vllm</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">readinessProbe</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">path: /health, port</span><span class="p">:</span><span class="w"> </span><span class="m">8000</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">initialDelaySeconds</span><span class="p">:</span><span class="w"> </span><span class="m">90</span><span class="w">        </span><span class="c"># weights take a minute to load</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="m">5</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">startupProbe</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">path: /health, port</span><span class="p">:</span><span class="w"> </span><span class="m">8000</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="m">60</span><span class="w">           </span><span class="c"># don&#39;t kill it during model load</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="m">10</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">lifecycle</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">preStop</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nt">exec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">                </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;sleep&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;30&#34;</span><span class="p">]</span><span class="w">   </span><span class="c"># give the LB time to deregister</span><span class="w">
+</span></span></span></code></pre></div><p>The startup probe is the one people skip. Without it Kubernetes will kill a 70B pod halfway through loading because the readiness probe failed for the 4th time.</p>
+<h2 id="verifying-its-actually-fast">Verifying it&rsquo;s actually fast</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">kubectl port-forward -n inference svc/vllm 8000:8000
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">curl -s http://localhost:8000/v1/completions <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -H <span class="s2">&#34;Content-Type: application/json&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -d <span class="s1">&#39;{
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;model&#34;: &#34;meta-llama/Llama-3.1-8B-Instruct&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;prompt&#34;: &#34;Write a haiku about Karpenter.&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;max_tokens&#34;: 64,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;stream&#34;: false
+</span></span></span><span class="line"><span class="cl"><span class="s1">  }&#39;</span> <span class="p">|</span> jq <span class="s1">&#39;.usage&#39;</span>
+</span></span></code></pre></div><p>Then look at the <code>/metrics</code> endpoint and confirm <code>vllm:gpu_cache_usage_perc</code> sits around 0.7-0.85 under load. If it&rsquo;s 0.2 you&rsquo;re not actually batching.</p>
+<h2 id="further-reading">Further reading</h2>
+<ul>
+<li><a href="https://docs.vllm.ai/en/latest/serving/deploying_with_k8s.html">vLLM production deployment guide</a></li>
+<li><a href="https://arxiv.org/abs/2309.06180">PagedAttention paper</a></li>
+<li><a href="https://www.anyscale.com/blog/continuous-batching-llm-inference">Continuous batching explained</a></li>
+</ul>
+]]></content:encoded>
+    </item>
+    <item>
+      <title>A Terraform Module for EKS GPU Node Groups</title>
+      <link>https://gmtreacy.github.io/aiops/posts/terraform-eks-gpu-nodegroup/</link>
+      <pubDate>Tue, 05 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/terraform-eks-gpu-nodegroup/</guid>
+      <description>A small, opinionated Terraform module for adding g5/p4d/p5 capacity to an existing EKS cluster — taints, labels, capacity reservations, and the IAM bits people forget.</description>
+      <content:encoded><![CDATA[<p>Most public EKS Terraform modules treat GPU node groups as an afterthought. This is the slim wrapper I keep reaching for, with the choices that have bitten me documented inline.</p>
+<h2 id="what-the-module-assumes">What the module assumes</h2>
+<ul>
+<li>You already have an EKS cluster managed by <a href="https://registry.terraform.io/modules/terraform-aws-modules/eks/aws/latest">terraform-aws-modules/eks/aws</a>.</li>
+<li>You will install the <a href="https://github.com/NVIDIA/k8s-device-plugin">NVIDIA device plugin</a> separately (Helm or via Karpenter&rsquo;s user-data).</li>
+<li>You want <strong>Spot for elastic, On-Demand Capacity Reservation for the floor.</strong></li>
+</ul>
+<h2 id="the-module">The module</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># modules/eks-gpu-nodegroup/variables.tf
+</span></span></span><span class="line"><span class="cl"><span class="n">variable &#34;cluster_name&#34;     { type</span> <span class="o">=</span> <span class="k">string</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;subnet_ids&#34;       { type</span> <span class="o">=</span> <span class="k">list</span><span class="p">(</span><span class="k">string</span><span class="p">)</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;instance_types&#34;   { type</span> <span class="o">=</span><span class="n"> list(string)  default</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;g5.2xlarge&#34;</span><span class="p">]</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;capacity_type&#34;    { type</span> <span class="o">=</span><span class="n"> string        default</span> <span class="o">=</span> <span class="s2">&#34;SPOT&#34;</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;min_size&#34;         { type</span> <span class="o">=</span><span class="n"> number        default</span> <span class="o">=</span> <span class="m">0</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;max_size&#34;         { type</span> <span class="o">=</span><span class="n"> number        default</span> <span class="o">=</span> <span class="m">8</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;desired_size&#34;     { type</span> <span class="o">=</span><span class="n"> number        default</span> <span class="o">=</span> <span class="m">0</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;capacity_reservation_id&#34; { type</span> <span class="o">=</span><span class="n"> string default</span> <span class="o">=</span> <span class="k">null</span> }
+</span></span><span class="line"><span class="cl"><span class="n">variable &#34;labels&#34;           { type</span> <span class="o">=</span><span class="n"> map(string)   default</span> <span class="o">=</span> {} }
+</span></span><span class="line"><span class="cl"><span class="k">variable</span> <span class="s2">&#34;taints&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  type</span> <span class="o">=</span><span class="n"> list(object({ key</span> <span class="o">=</span><span class="n"> string, value</span> <span class="o">=</span><span class="n"> string, effect</span> <span class="o">=</span> <span class="k">string</span> }<span class="p">))</span>
+</span></span><span class="line"><span class="cl"><span class="n">  default</span> <span class="o">=</span> <span class="p">[</span>{
+</span></span><span class="line"><span class="cl"><span class="n">    key</span> <span class="o">=</span><span class="n"> &#34;nvidia.com/gpu&#34;, value</span> <span class="o">=</span><span class="n"> &#34;true&#34;, effect</span> <span class="o">=</span> <span class="s2">&#34;NO_SCHEDULE&#34;</span>
+</span></span><span class="line"><span class="cl">  }<span class="p">]</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="c1"># modules/eks-gpu-nodegroup/main.tf
+</span></span></span><span class="line"><span class="cl"><span class="k">locals</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  name</span> <span class="o">=</span> <span class="s2">&#34;${var.cluster_name}-gpu&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  base_labels</span> <span class="o">=</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    &#34;workload&#34;</span>          <span class="o">=</span> <span class="s2">&#34;gpu&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    &#34;nvidia.com/gpu&#34;</span>    <span class="o">=</span> <span class="s2">&#34;present&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    &#34;node.kubernetes.io/instance-type&#34;</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">instance_types</span><span class="p">[</span><span class="m">0</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;aws_eks_node_group&#34; &#34;this&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  cluster_name</span>    <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">cluster_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  node_group_name</span> <span class="o">=</span> <span class="k">local</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  node_role_arn</span>   <span class="o">=</span> <span class="k">aws_iam_role</span><span class="p">.</span><span class="k">this</span><span class="p">.</span><span class="k">arn</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_ids</span>      <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">subnet_ids</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  ami_type</span>       <span class="o">=</span> <span class="s2">&#34;AL2023_x86_64_NVIDIA&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  instance_types</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">instance_types</span>
+</span></span><span class="line"><span class="cl"><span class="n">  capacity_type</span>  <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">capacity_type</span>
+</span></span><span class="line"><span class="cl"><span class="n">  disk_size</span>      <span class="o">=</span> <span class="m">200</span><span class="c1">          # weights are big
+</span></span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">scaling_config</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    min_size</span>     <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">min_size</span>
+</span></span><span class="line"><span class="cl"><span class="n">    max_size</span>     <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">max_size</span>
+</span></span><span class="line"><span class="cl"><span class="n">    desired_size</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">desired_size</span>
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  update_config { max_unavailable_percentage</span> <span class="o">=</span> <span class="m">25</span> }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  labels</span> <span class="o">=</span> <span class="k">merge</span><span class="p">(</span><span class="k">local</span><span class="p">.</span><span class="k">base_labels</span><span class="p">,</span> <span class="k">var</span><span class="p">.</span><span class="k">labels</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">dynamic</span> <span class="s2">&#34;taint&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    for_each</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">taints</span>
+</span></span><span class="line"><span class="cl">    <span class="k">content</span> {
+</span></span><span class="line"><span class="cl"><span class="n">      key</span>    <span class="o">=</span> <span class="k">taint</span><span class="p">.</span><span class="k">value</span><span class="p">.</span><span class="k">key</span>
+</span></span><span class="line"><span class="cl"><span class="n">      value</span>  <span class="o">=</span> <span class="k">taint</span><span class="p">.</span><span class="k">value</span><span class="p">.</span><span class="k">value</span>
+</span></span><span class="line"><span class="cl"><span class="n">      effect</span> <span class="o">=</span> <span class="k">taint</span><span class="p">.</span><span class="k">value</span><span class="p">.</span><span class="k">effect</span>
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">  <span class="k">dynamic</span> <span class="s2">&#34;capacity_reservation_specification&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">    for_each</span> <span class="o">=</span><span class="n"> var.capacity_reservation_id</span> <span class="o">==</span> <span class="k">null</span> <span class="err">?</span> <span class="p">[]</span> <span class="err">:</span> <span class="p">[</span><span class="m">1</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">    <span class="k">content</span> {
+</span></span><span class="line"><span class="cl">      <span class="k">capacity_reservation_target</span> {
+</span></span><span class="line"><span class="cl"><span class="n">        capacity_reservation_id</span> <span class="o">=</span> <span class="k">var</span><span class="p">.</span><span class="k">capacity_reservation_id</span>
+</span></span><span class="line"><span class="cl">      }
+</span></span><span class="line"><span class="cl">    }
+</span></span><span class="line"><span class="cl">  }
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  lifecycle { ignore_changes</span> <span class="o">=</span> <span class="p">[</span><span class="k">scaling_config</span><span class="p">[</span><span class="m">0</span><span class="p">].</span><span class="k">desired_size</span><span class="p">]</span> }
+</span></span><span class="line"><span class="cl"><span class="n">  tags</span> <span class="o">=</span><span class="n"> { &#34;k8s.io/cluster-autoscaler/${var.cluster_name}&#34;</span> <span class="o">=</span> <span class="s2">&#34;owned&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><h2 id="the-iam-piece-people-forget">The IAM piece people forget</h2>
+<p>The default node role docs forget that GPU nodes pulling weights from S3 also want <code>s3:GetObject</code> on the model bucket. Add it explicitly — never via <code>*</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">resource</span> <span class="s2">&#34;aws_iam_role_policy&#34; &#34;model_bucket_read&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  role</span> <span class="o">=</span> <span class="k">aws_iam_role</span><span class="p">.</span><span class="k">this</span><span class="p">.</span><span class="k">name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  policy</span> <span class="o">=</span> <span class="k">jsonencode</span><span class="p">(</span>{
+</span></span><span class="line"><span class="cl"><span class="n">    Version</span> <span class="o">=</span> <span class="s2">&#34;2012-10-17&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">    Statement</span> <span class="o">=</span> <span class="p">[</span>{
+</span></span><span class="line"><span class="cl"><span class="n">      Effect</span>   <span class="o">=</span> <span class="s2">&#34;Allow&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">      Action</span>   <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;s3:GetObject&#34;, &#34;s3:ListBucket&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">      Resource</span> <span class="o">=</span> <span class="p">[</span>
+</span></span><span class="line"><span class="cl">        <span class="s2">&#34;arn:aws:s3:::${var.model_bucket}&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="s2">&#34;arn:aws:s3:::${var.model_bucket}/*&#34;</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">      <span class="p">]</span>
+</span></span><span class="line"><span class="cl">    }<span class="p">]</span>
+</span></span><span class="line"><span class="cl">  }<span class="p">)</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Even better: do this at the <strong>pod</strong> level via <a href="https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html">EKS Pod Identity</a> and skip it on the node role entirely. The node should know nothing about your weights.</p>
+<h2 id="using-it">Using it</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="k">module</span> <span class="s2">&#34;gpu_g5&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  source</span> <span class="o">=</span> <span class="s2">&#34;./modules/eks-gpu-nodegroup&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  cluster_name</span>   <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">eks</span><span class="p">.</span><span class="k">cluster_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_ids</span>     <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">vpc</span><span class="p">.</span><span class="k">private_subnets</span>
+</span></span><span class="line"><span class="cl"><span class="n">  instance_types</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;g5.2xlarge&#34;, &#34;g5.4xlarge&#34;</span><span class="p">]</span><span class="c1">   # let ASG pick
+</span></span></span><span class="line"><span class="cl"><span class="n">  capacity_type</span>  <span class="o">=</span> <span class="s2">&#34;SPOT&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  min_size</span>       <span class="o">=</span> <span class="m">0</span>
+</span></span><span class="line"><span class="cl"><span class="n">  max_size</span>       <span class="o">=</span> <span class="m">12</span>
+</span></span><span class="line"><span class="cl"><span class="n">  labels</span>         <span class="o">=</span><span class="n"> { &#34;gpu.class&#34;</span> <span class="o">=</span> <span class="s2">&#34;a10g&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="k">module</span> <span class="s2">&#34;gpu_p4d_floor&#34;</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  source</span> <span class="o">=</span> <span class="s2">&#34;./modules/eks-gpu-nodegroup&#34;</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl"><span class="n">  cluster_name</span>             <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">eks</span><span class="p">.</span><span class="k">cluster_name</span>
+</span></span><span class="line"><span class="cl"><span class="n">  subnet_ids</span>               <span class="o">=</span> <span class="k">module</span><span class="p">.</span><span class="k">vpc</span><span class="p">.</span><span class="k">private_subnets</span>
+</span></span><span class="line"><span class="cl"><span class="n">  instance_types</span>           <span class="o">=</span> <span class="p">[</span><span class="s2">&#34;p4d.24xlarge&#34;</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="n">  capacity_type</span>            <span class="o">=</span> <span class="s2">&#34;ON_DEMAND&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  min_size</span>                 <span class="o">=</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="n">  max_size</span>                 <span class="o">=</span> <span class="m">2</span>
+</span></span><span class="line"><span class="cl"><span class="n">  desired_size</span>             <span class="o">=</span> <span class="m">1</span>
+</span></span><span class="line"><span class="cl"><span class="n">  capacity_reservation_id</span>  <span class="o">=</span> <span class="k">aws_ec2_capacity_reservation</span><span class="p">.</span><span class="k">p4d</span><span class="p">.</span><span class="k">id</span>
+</span></span><span class="line"><span class="cl"><span class="n">  labels</span>                   <span class="o">=</span><span class="n"> { &#34;gpu.class&#34;</span> <span class="o">=</span> <span class="s2">&#34;a100&#34;</span> }
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>Two pools: one elastic on Spot, one fixed on a <a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html">Capacity Reservation</a>. Pods that absolutely must run choose <code>gpu.class: a100</code> via <code>nodeSelector</code>; everything else schedules on the cheap pool first.</p>
+<h2 id="why-managed-node-groups-not-karpenter-for-the-floor">Why managed node groups, not Karpenter, for the floor</h2>
+<p>Yes, I love <a href="/posts/karpenter-llm-autoscaling/">Karpenter</a>. But:</p>
+<ul>
+<li>Karpenter doesn&rsquo;t <em>own</em> a Capacity Reservation — it consumes capacity at request time.</li>
+<li>For your contractually-guaranteed baseline, you want a managed node group with <code>desired_size = N</code> and an attached ODCR. That capacity exists whether your software is healthy or not.</li>
+<li>Use Karpenter for the elastic shoulder above the baseline.</li>
+</ul>
+<h2 id="pitfalls">Pitfalls</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Symptom</th>
+          <th>Cause</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td><code>0/3 nodes are available: 3 Insufficient nvidia.com/gpu</code></td>
+          <td>Device plugin not installed, or AMI is wrong (<code>AL2_x86_64</code> instead of <code>AL2023_x86_64_NVIDIA</code>)</td>
+      </tr>
+      <tr>
+          <td>Spot interruptions during model load</td>
+          <td>Add the <a href="https://github.com/aws/aws-node-termination-handler">Node Termination Handler</a> and a 120s <code>terminationGracePeriodSeconds</code></td>
+      </tr>
+      <tr>
+          <td>Disk fills up after a week</td>
+          <td>Weight cache + container layers. Set <code>disk_size = 200</code> minimum, use <a href="https://aws.amazon.com/ebs/general-purpose/"><code>gp3</code></a></td>
+      </tr>
+  </tbody>
+</table>
+<h2 id="source">Source</h2>
+<p>The full module lives at <a href="https://github.com/gmtreacy/aiops">github.com/gmtreacy/aiops</a> under <code>examples/eks-gpu-nodegroup/</code>.</p>
+]]></content:encoded>
+    </item>
+    <item>
+      <title>Karpenter for LLM Autoscaling</title>
+      <link>https://gmtreacy.github.io/aiops/posts/karpenter-llm-autoscaling/</link>
+      <pubDate>Sat, 02 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/karpenter-llm-autoscaling/</guid>
+      <description>A NodePool spec that brings GPU capacity online only when the queue demands it — and tears it down the moment the queue empties.</description>
+      <content:encoded><![CDATA[<p>The cluster autoscaler is fine for CPU. For GPU it&rsquo;s a liability — you&rsquo;ll pay for an idle <code>p4d</code> for 10 minutes after the last request completes. <a href="https://karpenter.sh/">Karpenter</a> does this better, and the LLM workload is exactly the shape it&rsquo;s good at: bursty, expensive, and indifferent to which instance type runs it as long as the GPU is there.</p>
+<h2 id="nodepool-the-elastic-gpu-pool">NodePool: the elastic GPU pool</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">karpenter.sh/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">NodePool</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">gpu-spot</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">template</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">labels</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">workload</span><span class="p">:</span><span class="w"> </span><span class="l">gpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">gpu.class</span><span class="p">:</span><span class="w"> </span><span class="l">a10g</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">taints</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l">nvidia.com/gpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;true&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">effect</span><span class="p">:</span><span class="w"> </span><span class="l">NoSchedule</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">requirements</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l">kubernetes.io/arch</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l">In</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">values</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;amd64&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l">karpenter.sh/capacity-type</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l">In</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">values</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;spot&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;on-demand&#34;</span><span class="p">]</span><span class="w">      </span><span class="c"># spot first, on-demand fallback</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l">node.kubernetes.io/instance-type</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l">In</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">values</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;g5.2xlarge&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;g5.4xlarge&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;g6.2xlarge&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;g6.4xlarge&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l">topology.kubernetes.io/zone</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l">In</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">values</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;ap-southeast-2a&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;ap-southeast-2b&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;ap-southeast-2c&#34;</span><span class="p">]</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">nodeClassRef</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">group</span><span class="p">:</span><span class="w"> </span><span class="l">karpenter.k8s.aws</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">kind</span><span class="p">:</span><span class="w">  </span><span class="l">EC2NodeClass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">name</span><span class="p">:</span><span class="w">  </span><span class="l">gpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">expireAfter</span><span class="p">:</span><span class="w"> </span><span class="l">720h    </span><span class="w"> </span><span class="c"># rotate weekly to pick up AMI updates</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">limits</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">cpu</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;1000&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;32&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">disruption</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">consolidationPolicy</span><span class="p">:</span><span class="w"> </span><span class="l">WhenEmpty</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">consolidateAfter</span><span class="p">:</span><span class="w"> </span><span class="l">30s</span><span class="w">
+</span></span></span></code></pre></div><p>Two things to underline:</p>
+<ol>
+<li><strong><code>consolidationPolicy: WhenEmpty</code></strong>, not <code>WhenUnderutilized</code>. Underutilized consolidation will move your in-flight inference pod off its node mid-stream. WhenEmpty waits until the node has zero workloads.</li>
+<li><strong><code>consolidateAfter: 30s</code></strong>. With expensive GPUs you do not want a 5-minute idle tail.</li>
+</ol>
+<h2 id="ec2nodeclass-the-ami-choice">EC2NodeClass: the AMI choice</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">karpenter.k8s.aws/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">EC2NodeClass</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">gpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">amiFamily</span><span class="p">:</span><span class="w"> </span><span class="l">AL2023</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">amiSelectorTerms</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">alias</span><span class="p">:</span><span class="w"> </span><span class="l">al2023@v20260301             </span><span class="w"> </span><span class="c"># pin; bump deliberately</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="s2">&#34;KarpenterNodeRole-prod&#34;</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">subnetSelectorTerms</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">tags</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">&#34;karpenter.sh/discovery&#34;: </span><span class="s2">&#34;prod&#34;</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">securityGroupSelectorTerms</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">tags</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">&#34;karpenter.sh/discovery&#34;: </span><span class="s2">&#34;prod&#34;</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">blockDeviceMappings</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span>- <span class="nt">deviceName</span><span class="p">:</span><span class="w"> </span><span class="l">/dev/xvda</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">ebs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">volumeSize</span><span class="p">:</span><span class="w"> </span><span class="l">200Gi</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">volumeType</span><span class="p">:</span><span class="w"> </span><span class="l">gp3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">iops</span><span class="p">:</span><span class="w"> </span><span class="m">6000</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">throughput</span><span class="p">:</span><span class="w"> </span><span class="m">250</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">encrypted</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">userData</span><span class="p">:</span><span class="w"> </span><span class="p">|</span><span class="sd">
+</span></span></span><span class="line"><span class="cl"><span class="sd">    #!/bin/bash
+</span></span></span><span class="line"><span class="cl"><span class="sd">    /etc/eks/bootstrap.sh prod \
+</span></span></span><span class="line"><span class="cl"><span class="sd">      --container-runtime containerd \
+</span></span></span><span class="line"><span class="cl"><span class="sd">      --kubelet-extra-args &#39;--node-labels=nvidia.com/gpu=present&#39;</span><span class="w">
+</span></span></span></code></pre></div><p>The 200 GB disk is not optional — Llama-3-70B weights are ~140 GB on their own.</p>
+<h2 id="telling-pods-to-use-it">Telling pods to use it</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">template</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">nodeSelector</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span><span class="nt">gpu.class</span><span class="p">:</span><span class="w"> </span><span class="l">a10g</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">tolerations</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l">nvidia.com/gpu</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l">Exists</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">effect</span><span class="p">:</span><span class="w"> </span><span class="l">NoSchedule</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">containers</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">vllm</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">resources</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">requests</span><span class="p">:</span><span class="w">  </span>{<span class="w"> </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">limits</span><span class="p">:</span><span class="w">    </span>{<span class="w"> </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w"> </span>}<span class="w">
+</span></span></span></code></pre></div><p>The <code>nodeSelector</code> is what gives Karpenter permission to pick a GPU instance. Without it Karpenter sees a pod that &ldquo;fits&rdquo; on a CPU node and will not provision a GPU.</p>
+<h2 id="what-good-looks-like">What &ldquo;good&rdquo; looks like</h2>
+<p>Watch these in <a href="/posts/observability-llm-workloads/">Grafana</a>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-promql" data-lang="promql"><span class="line"><span class="cl"><span class="c1"># how long pods wait for capacity</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.95</span><span class="p">,</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">karpenter_pods_startup_time_seconds_bucket</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="o">)</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># how often nodes get consolidated</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="k">sum</span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">karpenter_nodes_terminated_total</span><span class="p">{</span><span class="nl">reason</span><span class="o">=</span><span class="p">&#34;</span><span class="s">consolidation</span><span class="p">&#34;}[</span><span class="s">1h</span><span class="p">]</span><span class="o">))</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="c1"># spot interruptions</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="k">sum</span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">karpenter_interruption_actions_performed_total</span><span class="p">[</span><span class="s">1h</span><span class="p">]</span><span class="o">))</span><span class="w">
+</span></span></span></code></pre></div><p>For a healthy LLM cluster: p95 startup ~60-90s (the GPU AMI takes a minute to come up), consolidations happen on every traffic trough, interruptions stay under 1/hr per 10 nodes.</p>
+<h2 id="spot-odcr-and-the-floor">Spot, ODCR, and the floor</h2>
+<p>Run <strong>two NodePools</strong>:</p>
+<ul>
+<li><code>gpu-spot</code> — the one above. <code>min = 0</code>, scales freely.</li>
+<li><code>gpu-od-floor</code> — a small NodePool with <code>on-demand</code> only and a <code>topologySpreadConstraint</code> to keep at least one node alive across zones, for traffic you absolutely cannot drop.</li>
+</ul>
+<p>Even better: combine <code>gpu-od-floor</code> with an <a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html">On-Demand Capacity Reservation</a> so you&rsquo;re paying for guaranteed capacity, not best-effort.</p>
+<h2 id="common-failure-modes">Common failure modes</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Symptom</th>
+          <th>Cause</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td>Pods stuck <code>Pending</code> despite NodePool with capacity</td>
+          <td>Missing toleration for <code>nvidia.com/gpu</code> taint</td>
+      </tr>
+      <tr>
+          <td>Karpenter provisions CPU node for a GPU pod</td>
+          <td>Pod missing <code>nvidia.com/gpu</code> resource request — it&rsquo;s the trigger</td>
+      </tr>
+      <tr>
+          <td>New nodes come up but pods still pending</td>
+          <td>NVIDIA device plugin DaemonSet doesn&rsquo;t tolerate the GPU taint</td>
+      </tr>
+      <tr>
+          <td>Spot churn breaks long requests</td>
+          <td>Use Spot for stateless inference; pin batch / fine-tune jobs to On-Demand</td>
+      </tr>
+  </tbody>
+</table>
+<h2 id="reading-list">Reading list</h2>
+<ul>
+<li><a href="https://karpenter.sh/docs/concepts/nodepools/">Karpenter NodePool reference</a></li>
+<li><a href="https://karpenter.sh/docs/concepts/disruption/">Disruption budgets</a> — useful when you&rsquo;re ready</li>
+<li><a href="https://aws.amazon.com/blogs/containers/optimizing-deep-learning-workloads-on-amazon-eks-using-karpenter/">AWS blog: Karpenter for ML workloads</a></li>
+</ul>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

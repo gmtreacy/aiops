@@ -1,11 +1,152 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
-    <title>Tags on AI Ops</title>
-    <link>http://localhost:1313/aiops/tags/</link>
-    <description>Recent content in Tags on AI Ops</description>
+    <title>Tags on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/</link>
+    <description>Recent content in Tags on AI Ops Field Notes</description>
     <generator>Hugo</generator>
     <language>en-us</language>
-    <atom:link href="http://localhost:1313/aiops/tags/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Thu, 14 May 2026 08:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Introduction</title>
+      <link>https://gmtreacy.github.io/aiops/tags/introduction/</link>
+      <pubDate>Thu, 14 May 2026 08:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/introduction/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Meta</title>
+      <link>https://gmtreacy.github.io/aiops/tags/meta/</link>
+      <pubDate>Thu, 14 May 2026 08:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/meta/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Architecture</title>
+      <link>https://gmtreacy.github.io/aiops/tags/architecture/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/architecture/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Aws</title>
+      <link>https://gmtreacy.github.io/aiops/tags/aws/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/aws/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Eks</title>
+      <link>https://gmtreacy.github.io/aiops/tags/eks/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/eks/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Karpenter</title>
+      <link>https://gmtreacy.github.io/aiops/tags/karpenter/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/karpenter/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Vllm</title>
+      <link>https://gmtreacy.github.io/aiops/tags/vllm/</link>
+      <pubDate>Sun, 10 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/vllm/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Gpu</title>
+      <link>https://gmtreacy.github.io/aiops/tags/gpu/</link>
+      <pubDate>Fri, 08 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/gpu/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Inference</title>
+      <link>https://gmtreacy.github.io/aiops/tags/inference/</link>
+      <pubDate>Fri, 08 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/inference/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Kubernetes</title>
+      <link>https://gmtreacy.github.io/aiops/tags/kubernetes/</link>
+      <pubDate>Fri, 08 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/kubernetes/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Iac</title>
+      <link>https://gmtreacy.github.io/aiops/tags/iac/</link>
+      <pubDate>Tue, 05 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/iac/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Terraform</title>
+      <link>https://gmtreacy.github.io/aiops/tags/terraform/</link>
+      <pubDate>Tue, 05 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/terraform/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Autoscaling</title>
+      <link>https://gmtreacy.github.io/aiops/tags/autoscaling/</link>
+      <pubDate>Sat, 02 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/autoscaling/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Grafana</title>
+      <link>https://gmtreacy.github.io/aiops/tags/grafana/</link>
+      <pubDate>Tue, 28 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/grafana/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Observability</title>
+      <link>https://gmtreacy.github.io/aiops/tags/observability/</link>
+      <pubDate>Tue, 28 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/observability/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Opentelemetry</title>
+      <link>https://gmtreacy.github.io/aiops/tags/opentelemetry/</link>
+      <pubDate>Tue, 28 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/opentelemetry/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Prometheus</title>
+      <link>https://gmtreacy.github.io/aiops/tags/prometheus/</link>
+      <pubDate>Tue, 28 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/prometheus/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Bedrock</title>
+      <link>https://gmtreacy.github.io/aiops/tags/bedrock/</link>
+      <pubDate>Wed, 22 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/bedrock/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Cost</title>
+      <link>https://gmtreacy.github.io/aiops/tags/cost/</link>
+      <pubDate>Wed, 22 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/cost/</guid>
+      <description></description>
+    </item>
+    <item>
+      <title>Finops</title>
+      <link>https://gmtreacy.github.io/aiops/tags/finops/</link>
+      <pubDate>Wed, 22 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/tags/finops/</guid>
+      <description></description>
+    </item>
   </channel>
 </rss>

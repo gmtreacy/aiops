@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#312e81"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g transform="translate(900,150)">
+    <polygon points="0,40 60,10 60,80 0,110" fill="#7c3aed"/>
+    <polygon points="60,10 120,40 120,110 60,80" fill="#a78bfa"/>
+    <polygon points="60,80 120,110 60,140 0,110" fill="#5b21b6"/>
+  </g>
+  <g font-family="ui-sans-serif, system-ui" fill="#e2e8f0">
+    <text x="80" y="140" font-size="28" fill="#a78bfa">// infrastructure</text>
+    <text x="80" y="220" font-size="64" font-weight="800">Terraform GPU Pools</text>
+    <text x="80" y="276" font-size="30" fill="#cbd5e1">Reproducible g5/p4d/p5 capacity for EKS.</text>
+  </g>
+  <g transform="translate(80,360)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" fill="#c7d2fe">
+    <rect x="0" y="0" width="1040" height="200" rx="14" fill="#0f172a" stroke="#475569" stroke-width="2"/>
+    <text x="20" y="36" fill="#a78bfa">resource</text>
+    <text x="120" y="36" fill="#fbbf24">"aws_eks_node_group"</text>
+    <text x="380" y="36" fill="#fbbf24">"gpu"</text>
+    <text x="430" y="36"> {</text>
+    <text x="20" y="72">  instance_types = [</text>
+    <text x="220" y="72" fill="#86efac">"g5.2xlarge"</text>
+    <text x="360" y="72">]</text>
+    <text x="20" y="108">  capacity_type  = </text>
+    <text x="200" y="108" fill="#86efac">"SPOT"</text>
+    <text x="20" y="144">  ami_type       = </text>
+    <text x="200" y="144" fill="#86efac">"AL2023_x86_64_NVIDIA"</text>
+    <text x="20" y="180">}</text>
+  </g>
+</svg>

@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Inference on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/inference/</link>
+    <description>Recent content in Inference on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Fri, 08 May 2026 09:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/inference/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>vLLM on EKS, Properly Tuned</title>
+      <link>https://gmtreacy.github.io/aiops/posts/vllm-on-eks/</link>
+      <pubDate>Fri, 08 May 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/vllm-on-eks/</guid>
+      <description>Helm values, GPU memory tuning, and the half-dozen knobs that decide whether your tokens-per-second number is real or aspirational.</description>
+      <content:encoded><![CDATA[<p><a href="https://github.com/vllm-project/vllm">vLLM</a> is the right default for self-hosted LLM serving in 2026. The first time you deploy it you will get something that &ldquo;works&rdquo; and uses 30% of the GPU. This post is how to get the other 70%.</p>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li>An EKS cluster with a GPU node group (see <a href="/posts/terraform-eks-gpu-nodegroup/">Terraform GPU node group</a>)</li>
+<li>The <a href="https://github.com/NVIDIA/k8s-device-plugin">NVIDIA device plugin</a> installed</li>
+<li><a href="https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/"><code>nvidia.com/gpu</code></a> showing up under <code>kubectl describe node</code></li>
+</ul>
+<p>If <code>kubectl get pods -n kube-system | grep nvidia</code> is empty, stop and fix that first. Nothing else will work.</p>
+<h2 id="the-minimum-viable-helm-values">The minimum viable Helm values</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="c"># values.yaml</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">image</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">repository</span><span class="p">:</span><span class="w"> </span><span class="l">vllm/vllm-openai</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">tag</span><span class="p">:</span><span class="w"> </span><span class="l">v0.6.3</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l">meta-llama/Llama-3.1-8B-Instruct</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">resources</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">limits</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l">32Gi</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">requests</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">nvidia.com/gpu</span><span class="p">:</span><span class="w"> </span><span class="m">1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l">24Gi</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">extraArgs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">gpu-memory-utilization=0.92</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">max-model-len=8192</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">max-num-seqs=128</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">enable-prefix-caching</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">kv-cache-dtype=fp8</span><span class="w">
+</span></span></span></code></pre></div><p>Apply with:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">helm repo add vllm https://vllm-project.github.io/vllm
+</span></span><span class="line"><span class="cl">helm upgrade --install vllm vllm/vllm -n inference -f values.yaml
+</span></span></code></pre></div><h2 id="the-knobs-that-actually-matter">The knobs that actually matter</h2>
+<h3 id="--gpu-memory-utilization"><code>--gpu-memory-utilization</code></h3>
+<p>The default is <code>0.9</code>. On a clean A10G with no other tenants you can push to <strong>0.92</strong>. Don&rsquo;t go higher: vLLM needs scratch space for activations and the OOM killer is a poor diagnostic tool.</p>
+<h3 id="--max-model-len"><code>--max-model-len</code></h3>
+<p>Set this to the <strong>longest prompt + response you actually serve</strong>, not the model&rsquo;s max. An 8B model nominally supports 128K but the KV cache for that is <em>enormous</em> — it costs you batch slots. If 95% of traffic is &lt; 8K, set 8192 and refuse the rest.</p>
+<h3 id="--max-num-seqs"><code>--max-num-seqs</code></h3>
+<p>The continuous-batching ceiling. Higher = more concurrency, lower per-request latency variance, more memory pressure. Start at 128, watch <code>vllm:num_requests_running</code> in <a href="/posts/observability-llm-workloads/">Prometheus</a>, nudge until p95 latency starts to climb.</p>
+<h3 id="--enable-prefix-caching"><code>--enable-prefix-caching</code></h3>
+<p>Free 2-5× speedup if your traffic has shared prefixes (system prompts, RAG context). Off by default. Turn it on.</p>
+<h3 id="--kv-cache-dtypefp8"><code>--kv-cache-dtype=fp8</code></h3>
+<p>Halves KV cache memory at the cost of about 0.5% on quality benchmarks. On Hopper / Ada this is essentially free. On Ampere, benchmark first.</p>
+<h2 id="tensor-parallelism-when-not-whether">Tensor parallelism: when, not whether</h2>
+<p>For 70B-class models on a single <code>p4d.24xlarge</code>:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">extraArgs</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span>- --<span class="l">tensor-parallel-size=8</span><span class="w">
+</span></span></span></code></pre></div><p>Rules:</p>
+<ol>
+<li><code>tensor-parallel-size</code> must divide the model&rsquo;s attention head count.</li>
+<li>All ranks must be on the <strong>same node</strong> unless you have NVLink fabric. Cross-node tensor parallel over the EKS pod network is a recipe for sadness.</li>
+<li>Use <code>topology.kubernetes.io/zone</code> and a <code>podAntiAffinity</code> to keep one TP group per node.</li>
+</ol>
+<h2 id="the-pod-spec-with-the-bits-people-forget">The pod spec, with the bits people forget</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-yaml" data-lang="yaml"><span class="line"><span class="cl"><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l">apps/v1</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l">Deployment</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">metadata</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">vllm-llama3-8b</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">replicas</span><span class="p">:</span><span class="w"> </span><span class="m">2</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">  </span><span class="nt">template</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">runtimeClassName</span><span class="p">:</span><span class="w"> </span><span class="l">nvidia</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">terminationGracePeriodSeconds</span><span class="p">:</span><span class="w"> </span><span class="m">120</span><span class="w">  </span><span class="c"># let in-flight requests drain</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">      </span><span class="nt">containers</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">        </span>- <span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l">vllm</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">readinessProbe</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">path: /health, port</span><span class="p">:</span><span class="w"> </span><span class="m">8000</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">initialDelaySeconds</span><span class="p">:</span><span class="w"> </span><span class="m">90</span><span class="w">        </span><span class="c"># weights take a minute to load</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="m">5</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">startupProbe</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">httpGet</span><span class="p">:</span><span class="w"> </span>{<span class="w"> </span><span class="nt">path: /health, port</span><span class="p">:</span><span class="w"> </span><span class="m">8000</span><span class="w"> </span>}<span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">failureThreshold</span><span class="p">:</span><span class="w"> </span><span class="m">60</span><span class="w">           </span><span class="c"># don&#39;t kill it during model load</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">periodSeconds</span><span class="p">:</span><span class="w"> </span><span class="m">10</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">          </span><span class="nt">lifecycle</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">            </span><span class="nt">preStop</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">              </span><span class="nt">exec</span><span class="p">:</span><span class="w">
+</span></span></span><span class="line"><span class="cl"><span class="w">                </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&#34;sleep&#34;</span><span class="p">,</span><span class="w"> </span><span class="s2">&#34;30&#34;</span><span class="p">]</span><span class="w">   </span><span class="c"># give the LB time to deregister</span><span class="w">
+</span></span></span></code></pre></div><p>The startup probe is the one people skip. Without it Kubernetes will kill a 70B pod halfway through loading because the readiness probe failed for the 4th time.</p>
+<h2 id="verifying-its-actually-fast">Verifying it&rsquo;s actually fast</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-bash" data-lang="bash"><span class="line"><span class="cl">kubectl port-forward -n inference svc/vllm 8000:8000
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">curl -s http://localhost:8000/v1/completions <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -H <span class="s2">&#34;Content-Type: application/json&#34;</span> <span class="se">\
+</span></span></span><span class="line"><span class="cl">  -d <span class="s1">&#39;{
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;model&#34;: &#34;meta-llama/Llama-3.1-8B-Instruct&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;prompt&#34;: &#34;Write a haiku about Karpenter.&#34;,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;max_tokens&#34;: 64,
+</span></span></span><span class="line"><span class="cl"><span class="s1">    &#34;stream&#34;: false
+</span></span></span><span class="line"><span class="cl"><span class="s1">  }&#39;</span> <span class="p">|</span> jq <span class="s1">&#39;.usage&#39;</span>
+</span></span></code></pre></div><p>Then look at the <code>/metrics</code> endpoint and confirm <code>vllm:gpu_cache_usage_perc</code> sits around 0.7-0.85 under load. If it&rsquo;s 0.2 you&rsquo;re not actually batching.</p>
+<h2 id="further-reading">Further reading</h2>
+<ul>
+<li><a href="https://docs.vllm.ai/en/latest/serving/deploying_with_k8s.html">vLLM production deployment guide</a></li>
+<li><a href="https://arxiv.org/abs/2309.06180">PagedAttention paper</a></li>
+<li><a href="https://www.anyscale.com/blog/continuous-batching-llm-inference">Continuous batching explained</a></li>
+</ul>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#022c22"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g font-family="ui-sans-serif, system-ui" fill="#ecfdf5">
+    <text x="80" y="140" font-size="28" fill="#6ee7b7">// autoscaling</text>
+    <text x="80" y="220" font-size="64" font-weight="800">Karpenter for LLMs</text>
+    <text x="80" y="276" font-size="30" fill="#a7f3d0">Spin GPU nodes only when tokens demand them.</text>
+  </g>
+  <g transform="translate(80,360)">
+    <rect x="0" y="0" width="1040" height="200" rx="14" fill="#064e3b" stroke="#10b981" stroke-width="2"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" fill="#bbf7d0">
+      <text x="20" y="36">queue_depth ───────╮</text>
+      <text x="20" y="68">                   ▼</text>
+      <text x="20" y="100">  Karpenter ──▶ NodeClaim ──▶ g5.2xlarge (SPOT)  ✅ ready in 47s</text>
+      <text x="20" y="140">  scale-down on consolidation: idle 5m  ──▶  terminate</text>
+      <text x="20" y="180">  weight: gpu &gt; cpu;  zones: a,b,c;  TTL: empty=30s</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Cost on AI Ops Field Notes</title>
+    <link>https://gmtreacy.github.io/aiops/tags/cost/</link>
+    <description>Recent content in Cost on AI Ops Field Notes</description>
+    <generator>Hugo</generator>
+    <language>en-us</language>
+    <lastBuildDate>Wed, 22 Apr 2026 09:00:00 +1000</lastBuildDate>
+    <atom:link href="https://gmtreacy.github.io/aiops/tags/cost/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>FinOps for LLMs: $/Million Tokens or Bust</title>
+      <link>https://gmtreacy.github.io/aiops/posts/finops-dollars-per-million-tokens/</link>
+      <pubDate>Wed, 22 Apr 2026 09:00:00 +1000</pubDate>
+      <guid>https://gmtreacy.github.io/aiops/posts/finops-dollars-per-million-tokens/</guid>
+      <description>How to actually compare self-hosting vs Bedrock vs OpenAI without lying to yourself. The unit metric is dollars per million tokens — everything else is vanity.</description>
+      <content:encoded><![CDATA[<p>A team will spend two weeks debating model choice and forty seconds on cost. This post tries to invert that.</p>
+<h2 id="the-only-number-that-matters">The only number that matters</h2>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-text" data-lang="text"><span class="line"><span class="cl">$/1M tokens = total infrastructure cost (in window)
+</span></span><span class="line"><span class="cl">              ──────────────────────────────────────
+</span></span><span class="line"><span class="cl">              total tokens generated (in window)
+</span></span></code></pre></div><p>Not requests. Not pods. <strong>Tokens.</strong> Anything else makes self-hosted look cheap when it isn&rsquo;t, or expensive when it isn&rsquo;t.</p>
+<h2 id="where-the-numbers-come-from">Where the numbers come from</h2>
+<table>
+  <thead>
+      <tr>
+          <th>Component</th>
+          <th>Source</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td>Instance $/hr</td>
+          <td><a href="https://aws.amazon.com/ec2/pricing/on-demand/">AWS On-Demand Pricing</a> or <a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/using-pelong.html">Pricing API</a></td>
+      </tr>
+      <tr>
+          <td>Spot discount</td>
+          <td><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-spot-instances-history.html">Spot Pricing History</a></td>
+      </tr>
+      <tr>
+          <td>Pod-hours</td>
+          <td>Prometheus <code>kube_pod_info</code> integrated over time</td>
+      </tr>
+      <tr>
+          <td>Tokens generated</td>
+          <td>vLLM <code>vllm:generation_tokens_total</code> counter</td>
+      </tr>
+      <tr>
+          <td>Bedrock cost</td>
+          <td><code>bedrock-runtime</code> invocation metrics + <a href="https://aws.amazon.com/bedrock/pricing/">Bedrock Pricing</a></td>
+      </tr>
+  </tbody>
+</table>
+<p>Use the Pricing API in production. Hard-coded <code>$/hr</code> constants will bite you within a quarter.</p>
+<h2 id="a-worked-comparison">A worked comparison</h2>
+<p>Same workload — 5 RPS of 2K-prompt / 500-token responses (~12.5M tokens/hr generated). All numbers below are illustrative; verify with current pricing.</p>
+<table>
+  <thead>
+      <tr>
+          <th>Approach</th>
+          <th>Hardware / model</th>
+          <th>$/hr</th>
+          <th>tok/s</th>
+          <th>$/1M tokens</th>
+      </tr>
+  </thead>
+  <tbody>
+      <tr>
+          <td>Self-host Llama-3-8B</td>
+          <td>1× <code>g5.2xlarge</code> Spot</td>
+          <td>~$0.60</td>
+          <td>3,200</td>
+          <td><strong>~$0.05</strong></td>
+      </tr>
+      <tr>
+          <td>Self-host Llama-3-8B</td>
+          <td>1× <code>g5.2xlarge</code> On-Demand</td>
+          <td>~$1.21</td>
+          <td>3,200</td>
+          <td>~$0.10</td>
+      </tr>
+      <tr>
+          <td>Self-host Llama-3-70B</td>
+          <td>1× <code>p4d.24xlarge</code> ODCR</td>
+          <td>~$32.77</td>
+          <td>9,800</td>
+          <td>~$0.93</td>
+      </tr>
+      <tr>
+          <td>Bedrock — Llama-3-8B</td>
+          <td>n/a</td>
+          <td>per-token</td>
+          <td>n/a</td>
+          <td>~$0.30</td>
+      </tr>
+      <tr>
+          <td>Bedrock — Claude Haiku</td>
+          <td>n/a</td>
+          <td>per-token</td>
+          <td>n/a</td>
+          <td>~$0.25</td>
+      </tr>
+      <tr>
+          <td>Bedrock — Claude Sonnet</td>
+          <td>n/a</td>
+          <td>per-token</td>
+          <td>n/a</td>
+          <td>~$3.00</td>
+      </tr>
+      <tr>
+          <td>OpenAI — GPT-4o-mini</td>
+          <td>n/a</td>
+          <td>per-token</td>
+          <td>n/a</td>
+          <td>~$0.60</td>
+      </tr>
+  </tbody>
+</table>
+<p>Two reads from this table:</p>
+<ol>
+<li>Self-hosting an 8B on a saturated <code>g5</code> is <strong>5-6× cheaper</strong> than the equivalent managed model. <strong>If</strong> it&rsquo;s saturated.</li>
+<li>Self-hosting a 70B on a <code>p4d</code> is <strong>only</strong> ~3× cheaper than Sonnet, and Sonnet is a measurably better model. The math swings hard at this size.</li>
+</ol>
+<h2 id="where-self-hosting-goes-wrong">Where self-hosting goes wrong</h2>
+<p>It&rsquo;s almost always one of three things:</p>
+<h3 id="1-the-gpu-isnt-saturated">1. The GPU isn&rsquo;t saturated</h3>
+<p>A <code>g5.2xlarge</code> running at 20% utilisation has the same $/hr as one at 95%, and 4× the $/1M tokens. Continuous batching (<a href="/posts/vllm-on-eks/">covered here</a>) is non-negotiable, and you must either:</p>
+<ul>
+<li>run multiple tenants on one pod (<code>--max-num-seqs</code> cranked up), or</li>
+<li>scale pods down aggressively when traffic dips (<a href="/posts/karpenter-llm-autoscaling/">Karpenter</a> helps).</li>
+</ul>
+<h3 id="2-idle-capacity-for-just-in-case">2. Idle capacity for &ldquo;just in case&rdquo;</h3>
+<p>Three replicas &ldquo;for HA&rdquo; on a model getting 0.5 RPS at 03:00 will demolish your unit cost. Use a Spot pool with <code>min = 0</code> and a small On-Demand floor of one or two pods.</p>
+<h3 id="3-engineer-hours">3. Engineer-hours</h3>
+<p>A team of two SREs costs ~$400k/year fully loaded. That&rsquo;s $46/hr — i.e., the cost of running ~38 idle <code>g5.2xlarge</code> instances around the clock. If the platform takes 25% of two engineers to keep upright, you owe that to the cost model.</p>
+<p>A useful rule of thumb: <strong>self-hosting is cheaper than Bedrock above roughly 50M tokens/day of sustained traffic on a given model.</strong> Below that, the engineering tax dominates.</p>
+<h2 id="tagging-that-survives-a-finance-audit">Tagging that survives a finance audit</h2>
+<p>Tag every GPU resource so Cost Explorer can split it cleanly:</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-hcl" data-lang="hcl"><span class="line"><span class="cl"><span class="n">tags</span> <span class="o">=</span> {
+</span></span><span class="line"><span class="cl"><span class="n">  &#34;cost-center&#34;</span>  <span class="o">=</span> <span class="s2">&#34;ai-platform&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  &#34;workload&#34;</span>     <span class="o">=</span> <span class="s2">&#34;inference&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  &#34;model&#34;</span>        <span class="o">=</span> <span class="s2">&#34;llama-3-8b&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  &#34;tenant&#34;</span>       <span class="o">=</span> <span class="s2">&#34;internal-search&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="n">  &#34;environment&#34;</span>  <span class="o">=</span> <span class="s2">&#34;prod&#34;</span>
+</span></span><span class="line"><span class="cl">}
+</span></span></code></pre></div><p>For Bedrock, use the <a href="https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles.html">Application Inference Profile</a> feature to tag invocations the same way. Then the cost-per-tenant and cost-per-model dashboards are one Cost Explorer query away.</p>
+<h2 id="putting-1m-tokens-on-the-wall">Putting <code>$/1M tokens</code> on the wall</h2>
+<p>The implementation lives in <a href="/posts/observability-llm-workloads/">Observability for LLM workloads</a>. The short version:</p>
+<ol>
+<li>Lambda runs hourly.</li>
+<li>Pulls Prometheus tokens, Pricing API rates, pod-hours.</li>
+<li>Writes a CloudWatch metric <code>aiops/DollarsPerMillionTokens</code>.</li>
+<li>Grafana panel with WoW delta, alert at +30%.</li>
+</ol>
+<p>Once it&rsquo;s on a screen, decisions get faster: a PR that drops tok/s by 8% is no longer &ldquo;weird perf regression&rdquo; — it&rsquo;s a $7,000/month bill.</p>
+<h2 id="bedrock-isnt-the-enemy">Bedrock isn&rsquo;t the enemy</h2>
+<p>A short defense of the managed path: for low-volume, spiky, or compliance-sensitive workloads, <strong>the cheaper $/1M tokens of self-hosting is wiped out by the cost of one outage you should not have had</strong>. Use Bedrock as the floor and self-host where the volume actually justifies it. Most platforms end up with a mix.</p>
+<h2 id="reading-list">Reading list</h2>
+<ul>
+<li><a href="https://aws.amazon.com/bedrock/pricing/">AWS Bedrock pricing</a></li>
+<li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/using-pelong.html">AWS Pricing API</a></li>
+<li><a href="https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/aws-cost-explorer-what-is.html">Cost Explorer with Resource Tags</a></li>
+<li><a href="https://www.finops.org/">FinOps Foundation — AI cost management</a></li>
+</ul>
+]]></content:encoded>
+    </item>
+  </channel>
+</rss>
